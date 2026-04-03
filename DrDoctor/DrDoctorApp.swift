@@ -25,7 +25,7 @@ struct DrDoctorApp: App {
     @State private var appState = AppState()
 
     var body: some Scene {
-        WindowGroup {
+        Window("Dr. Doctor", id: "main") {
             ContentView(appState: appState)
                 .onAppear {
                     appDelegate.appState = appState
