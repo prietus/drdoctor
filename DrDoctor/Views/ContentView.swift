@@ -41,7 +41,12 @@ struct ContentView: View {
         .onChange(of: appState.pendingFileURL) {
             if let url = appState.pendingFileURL {
                 appState.pendingFileURL = nil
-                handleOpenURL(url)
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                    analyzeFolder(url: url)
+                } else {
+                    handleOpenURL(url)
+                }
             }
         }
         .alert("Error", isPresented: $showError) {
