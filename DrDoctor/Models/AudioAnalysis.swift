@@ -5,6 +5,7 @@ struct AudioAnalysis {
     let dynamicRange: DynamicRangeResult
     let spectral: SpectralResult
     let clipping: ClippingResult
+    let stereoImage: StereoImageResult?
     let verdict: MasteringVerdictResult
     let waveformData: WaveformData
     let spectrumData: SpectrumData
@@ -99,6 +100,16 @@ enum VerdictStatus {
     case pass
     case warning
     case fail
+}
+
+// MARK: - Stereo Image
+
+struct StereoImageResult {
+    let correlation: Double
+    let stereoWidth: Double
+    let phaseIssuePercentage: Double
+    let bandWidths: [(band: String, width: Double)]
+    let lissajousPoints: [(x: Float, y: Float)]
 }
 
 // MARK: - Visualization Data

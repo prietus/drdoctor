@@ -28,6 +28,11 @@ struct AnalysisResultView: View {
                     spectralResult: analysis.spectral,
                     sampleRate: analysis.fileInfo.sampleRate
                 )
+
+                // Stereo Image (only for stereo files)
+                if let stereo = analysis.stereoImage {
+                    StereoImageView(stereo: stereo)
+                }
             }
             .padding(24)
         }

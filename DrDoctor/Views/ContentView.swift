@@ -3,7 +3,10 @@ import UniformTypeIdentifiers
 import Accelerate
 
 struct ContentView: View {
+    var appState: AppState
     @State private var analysis: AudioAnalysis?
+    @State private var folderTracks: [TrackSummary]?
+    @State private var albumSummary: AlbumSummary?
     @State private var isAnalyzing = false
     @State private var errorMessage: String?
     @State private var showError = false
@@ -19,6 +22,13 @@ struct ContentView: View {
 
             if let analysis = analysis {
                 AnalysisResultView(analysis: analysis, onNewFile: reset)
+            } else if let tracks = folderTracks, let summary = albumSummary {
+                FolderAnalysisView(
+                    tracks: tracks,
+                    albumSummary: summary,
+                    onSelectTrack: { selected in analysis = selected },
+                    onBack: reset
+                )
             } else if isAnalyzing {
                 analysingView
             } else {
@@ -27,6 +37,12 @@ struct ContentView: View {
         }
         .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
             handleDrop(providers)
+        }
+        .onChange(of: appState.pendingFileURL) {
+            if let url = appState.pendingFileURL {
+                appState.pendingFileURL = nil
+                handleOpenURL(url)
+            }
         }
         .alert("Error", isPresented: $showError) {
             Button("OK") { showError = false }
@@ -63,15 +79,27 @@ struct ContentView: View {
                     .foregroundStyle(.quaternary)
             }
 
-            Button {
-                openFilePicker()
-            } label: {
-                Label("Choose File", systemImage: "folder")
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
+            HStack(spacing: 16) {
+                Button {
+                    openFilePicker()
+                } label: {
+                    Label("Choose File", systemImage: "doc.badge.gearshape")
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+
+                Button {
+                    openFolderPicker()
+                } label: {
+                    Label("Analyze Folder", systemImage: "folder.badge.gearshape")
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
 
             Divider().frame(width: 200).padding(.vertical, 4)
 
@@ -162,6 +190,31 @@ struct ContentView: View {
         }
     }
 
+    private func openFolderPicker() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "Select a folder with audio files to analyze"
+        panel.begin { response in
+            if response == .OK, let url = panel.url {
+                self.analyzeFolder(url: url)
+            }
+        }
+    }
+
+    private func handleOpenURL(_ url: URL) {
+        let ext = url.pathExtension.lowercased()
+        guard Self.supportedExtensions.contains(ext) else {
+            errorMessage = "Unsupported format: .\(ext)"
+            showError = true
+            return
+        }
+        // Reset any previous analysis and start new one
+        analysis = nil
+        analyzeFile(url: url)
+    }
+
     private func submitPath() {
         let cleaned = pathText.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
@@ -228,7 +281,16 @@ struct ContentView: View {
                     samples: audioData.samples,
                     sampleRate: audioData.sampleRate
                 )
-                await MainActor.run { progress = 0.8; progressMessage = "Computing verdict..." }
+                await MainActor.run { progress = 0.7; progressMessage = "Analyzing stereo image..." }
+
+                // Step 4b: Stereo image analysis
+                let stereoResult: StereoImageResult?
+                if let left = audioData.leftChannel, let right = audioData.rightChannel {
+                    stereoResult = StereoAnalyzer.analyze(left: left, right: right, sampleRate: audioData.sampleRate)
+                } else {
+                    stereoResult = nil
+                }
+                await MainActor.run { progress = 0.85; progressMessage = "Computing verdict..." }
 
                 // Step 5: Generate waveform data
                 let waveform = Self.generateWaveformData(samples: audioData.samples)
@@ -268,6 +330,7 @@ struct ContentView: View {
                     dynamicRange: drResult,
                     spectral: spectralResult,
                     clipping: clippingResult,
+                    stereoImage: stereoResult,
                     verdict: verdict,
                     waveformData: waveform,
                     spectrumData: spectrumDisplay
@@ -319,8 +382,125 @@ struct ContentView: View {
         return WaveformData(minSamples: minSamples, maxSamples: maxSamples, rmsEnvelope: rmsEnvelope)
     }
 
+    // MARK: - Folder Analysis
+
+    private func analyzeFolder(url: URL) {
+        isAnalyzing = true
+        errorMessage = nil
+        progress = 0
+        progressMessage = "Scanning folder..."
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                // Find audio files in folder
+                let fm = FileManager.default
+                let contents = try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+                let audioFiles = contents
+                    .filter { Self.supportedExtensions.contains($0.pathExtension.lowercased()) }
+                    .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+
+                guard !audioFiles.isEmpty else {
+                    await MainActor.run {
+                        errorMessage = "No audio files found in this folder."
+                        showError = true
+                        isAnalyzing = false
+                    }
+                    return
+                }
+
+                var tracks = [TrackSummary]()
+
+                for (index, fileURL) in audioFiles.enumerated() {
+                    let trackNum = index + 1
+                    await MainActor.run {
+                        progress = Double(index) / Double(audioFiles.count)
+                        progressMessage = "Analyzing \(trackNum)/\(audioFiles.count): \(fileURL.lastPathComponent)"
+                    }
+
+                    // Analyze each track (reuse single-file pipeline)
+                    let audioData = try await AudioFileReader.read(url: fileURL)
+
+                    let drResult = DynamicRangeAnalyzer.analyze(samples: audioData.samples, sampleRate: audioData.sampleRate)
+                    let spectralResult = SpectralAnalyzer.analyze(samples: audioData.samples, sampleRate: audioData.sampleRate)
+                    let clippingResult = ClippingDetector.analyze(samples: audioData.samples, sampleRate: audioData.sampleRate)
+
+                    let stereoResult: StereoImageResult?
+                    if let left = audioData.leftChannel, let right = audioData.rightChannel {
+                        stereoResult = StereoAnalyzer.analyze(left: left, right: right, sampleRate: audioData.sampleRate)
+                    } else {
+                        stereoResult = nil
+                    }
+
+                    let waveform = Self.generateWaveformData(samples: audioData.samples)
+                    let isDSD = audioData.codec.uppercased().contains("DSD")
+                    let spectrumDisplay = SpectrumData(
+                        magnitudes: spectralResult.averageSpectrum,
+                        frequencies: spectralResult.frequencyBins,
+                        cutoffMarker: isDSD ? nil : spectralResult.detectedCutoffHz.map { Float($0) }
+                    )
+                    let verdict = MasteringVerdictEngine.evaluate(
+                        dynamicRange: drResult, spectral: spectralResult,
+                        clipping: clippingResult, codec: audioData.codec
+                    )
+
+                    let fileSize = (try? fm.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
+                    let fileInfo = AudioFileInfo(
+                        url: fileURL, fileName: fileURL.lastPathComponent,
+                        fileExtension: fileURL.pathExtension.uppercased(), fileSize: fileSize,
+                        sampleRate: audioData.sampleRate, bitDepth: audioData.bitDepth,
+                        channels: audioData.channels, duration: audioData.duration, codec: audioData.codec
+                    )
+
+                    let trackAnalysis = AudioAnalysis(
+                        fileInfo: fileInfo, dynamicRange: drResult, spectral: spectralResult,
+                        clipping: clippingResult, stereoImage: stereoResult,
+                        verdict: verdict, waveformData: waveform, spectrumData: spectrumDisplay
+                    )
+
+                    tracks.append(TrackSummary(
+                        trackNumber: trackNum, fileName: fileURL.deletingPathExtension().lastPathComponent,
+                        url: fileURL, analysis: trackAnalysis
+                    ))
+                }
+
+                // Compute album summary
+                let avgDR = tracks.map(\.analysis.dynamicRange.drScore).reduce(0, +) / Double(tracks.count)
+                let avgLUFS = tracks.map(\.analysis.dynamicRange.integratedLUFS).reduce(0, +) / Double(tracks.count)
+                let maxPeak = tracks.map(\.analysis.clipping.truePeakDB).max() ?? -100
+                let worstClip = tracks.map(\.analysis.clipping.clippingPercentage).max() ?? 0
+
+                let overallVerdict: MasteringVerdict
+                if avgDR >= 12 && avgLUFS < -10 { overallVerdict = .excellent }
+                else if avgDR >= 8 { overallVerdict = .good }
+                else if avgDR >= 5 { overallVerdict = .mediocre }
+                else { overallVerdict = .poor }
+
+                let summary = AlbumSummary(
+                    folderName: url.lastPathComponent, trackCount: tracks.count,
+                    avgDR: avgDR, avgLUFS: avgLUFS, maxTruePeak: maxPeak,
+                    worstClipping: worstClip, overallVerdict: overallVerdict
+                )
+
+                await MainActor.run {
+                    progress = 1.0
+                    folderTracks = tracks
+                    albumSummary = summary
+                    isAnalyzing = false
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    showError = true
+                    isAnalyzing = false
+                }
+            }
+        }
+    }
+
     private func reset() {
         analysis = nil
+        folderTracks = nil
+        albumSummary = nil
         isAnalyzing = false
         progress = 0
     }

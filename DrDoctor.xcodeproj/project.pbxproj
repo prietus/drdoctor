@@ -21,6 +21,9 @@
 		A10000012 /* SpectrumView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000012; };
 		A10000013 /* VerdictBadgeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000013; };
 		A10000014 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000014; };
+		A10000015 /* StereoAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000017; };
+		A10000016 /* StereoImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000018; };
+		A10000017 /* FolderAnalysisView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000019; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +43,9 @@
 		A20000014 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000015 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A20000016 /* DrDoctor.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DrDoctor.entitlements; sourceTree = "<group>"; };
+		A20000017 /* StereoAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StereoAnalyzer.swift; sourceTree = "<group>"; };
+		A20000018 /* StereoImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StereoImageView.swift; sourceTree = "<group>"; };
+		A20000019 /* FolderAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAnalysisView.swift; sourceTree = "<group>"; };
 		A30000001 /* DrDoctor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DrDoctor.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -93,6 +99,7 @@
 				A20000007 /* SpectralAnalyzer.swift */,
 				A20000008 /* ClippingDetector.swift */,
 				A20000009 /* MasteringVerdict.swift */,
+				A20000017 /* StereoAnalyzer.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -105,6 +112,8 @@
 				A20000011 /* WaveformView.swift */,
 				A20000012 /* SpectrumView.swift */,
 				A20000013 /* VerdictBadgeView.swift */,
+				A20000018 /* StereoImageView.swift */,
+				A20000019 /* FolderAnalysisView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -199,6 +208,9 @@
 				A10000011 /* WaveformView.swift in Sources */,
 				A10000012 /* SpectrumView.swift in Sources */,
 				A10000013 /* VerdictBadgeView.swift in Sources */,
+				A10000015 /* StereoAnalyzer.swift in Sources */,
+				A10000016 /* StereoImageView.swift in Sources */,
+				A10000017 /* FolderAnalysisView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

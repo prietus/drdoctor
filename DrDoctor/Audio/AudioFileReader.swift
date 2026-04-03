@@ -20,6 +20,8 @@ enum AudioReaderError: Error, LocalizedError {
 
 struct AudioData {
     let samples: [Float]
+    let leftChannel: [Float]?
+    let rightChannel: [Float]?
     let sampleRate: Double
     let channels: Int
     let bitDepth: Int
@@ -67,6 +69,17 @@ final class AudioFileReader {
         let channelCount = Int(processingFormat.channelCount)
         let sampleCount = Int(buffer.frameLength)
 
+        // Preserve individual channels for stereo analysis
+        var leftChannel: [Float]?
+        var rightChannel: [Float]?
+
+        if channelCount >= 2,
+           let leftData = buffer.floatChannelData?[0],
+           let rightData = buffer.floatChannelData?[1] {
+            leftChannel = Array(UnsafeBufferPointer(start: leftData, count: sampleCount))
+            rightChannel = Array(UnsafeBufferPointer(start: rightData, count: sampleCount))
+        }
+
         // Mix to mono for analysis
         var monoSamples = [Float](repeating: 0, count: sampleCount)
         var scale = Float(1.0 / Double(channelCount))
@@ -81,6 +94,8 @@ final class AudioFileReader {
 
         return AudioData(
             samples: monoSamples,
+            leftChannel: leftChannel,
+            rightChannel: rightChannel,
             sampleRate: file.processingFormat.sampleRate,
             channels: channelCount,
             bitDepth: bitDepth,
@@ -177,9 +192,9 @@ final class AudioFileReader {
         }
         let dataPayloadOffset = dataChunkOffset + 12
 
-        // DSD to PCM: two-stage decimation with anti-aliasing filter
-        // Stage 1: byte-level popcount → intermediate rate (dsdSampleRate / 8)
-        // Stage 2: FIR low-pass filter + decimation → 44.1kHz
+        // DSD to PCM via 5th-order CIC (Cascaded Integrator-Comb) decimation filter.
+        // CIC is the standard approach for DSD→PCM: operates directly on the 1-bit stream,
+        // provides >100dB stopband rejection, and preserves signal level correctly.
         let blockSize = blockSizePerChannel > 0 ? blockSizePerChannel : 4096
         let interleaveBlockSize = blockSize * channelCount
         let availableDataBytes = totalFileSize - dataPayloadOffset
@@ -189,19 +204,20 @@ final class AudioFileReader {
             throw AudioReaderError.dsfParseError("No audio data to decode")
         }
 
-        // Intermediate rate: each byte → 1 sample at (dsdSampleRate / 8)
-        // For DSD64: 2822400/8 = 352800 Hz
-        let intermediateRate = dsdSampleRate / 8.0
         let pcmSampleRate = 44100.0
-        let stage2Decimation = max(1, Int(intermediateRate / pcmSampleRate)) // 8 for DSD64
+        // Decimation ratio: DSD64=64, DSD128=128, DSD256=256
+        let R = Int(dsdSampleRate / pcmSampleRate)
+        guard R > 0 else {
+            throw AudioReaderError.dsfParseError("Invalid DSD sample rate for decimation")
+        }
 
         // Calculate how many ch0 bytes we need for ~30s of output
         let maxPCMSamples = Int(pcmSampleRate * 30)
-        let intermediateSamplesNeeded = maxPCMSamples * stage2Decimation
-        let ch0BytesNeeded = intermediateSamplesNeeded
+        let dsdBitsNeeded = maxPCMSamples * R
+        let ch0BytesNeeded = (dsdBitsNeeded + 7) / 8
         let blocksNeeded = min((ch0BytesNeeded + blockSize - 1) / blockSize, totalBlocks)
 
-        // ONE sequential read
+        // ONE sequential read from data start
         let bytesToRead = blocksNeeded * interleaveBlockSize
         try fh.seek(toOffset: UInt64(dataPayloadOffset))
         guard let rawData = try fh.read(upToCount: bytesToRead), !rawData.isEmpty else {
@@ -221,67 +237,113 @@ final class AudioFileReader {
             }
         }
 
-        // Stage 1: popcount each byte → intermediate PCM at 352.8kHz (DSD64)
-        let intermediateCount = ch0Bytes.count
-        var intermediate = [Float](repeating: 0, count: intermediateCount)
-        for i in 0..<intermediateCount {
-            // Map byte popcount [0..8] → [-1.0..+1.0]
-            intermediate[i] = Float(ch0Bytes[i].nonzeroBitCount) * 0.25 - 1.0
-        }
+        // 5th-order CIC decimation filter
+        // Integrator stages accumulate, comb stages differentiate after decimation.
+        // This provides sinc^5 frequency response with excellent stopband rejection.
+        let cicOrder = 5
+        var integrators = [Int64](repeating: 0, count: cicOrder)
+        var combPrev = [Int64](repeating: 0, count: cicOrder)
 
-        // Stage 2: FIR low-pass filter + decimation using vDSP
-        // Design a simple 64-tap windowed sinc filter with cutoff at ~20kHz
-        let filterLength = 64
-        let cutoffNormalized = Float(20000.0 / intermediateRate) * 2.0 // normalized cutoff
-        var firFilter = [Float](repeating: 0, count: filterLength)
-        let center = Float(filterLength - 1) / 2.0
-
-        for i in 0..<filterLength {
-            let n = Float(i) - center
-            // Sinc
-            let sinc: Float
-            if abs(n) < 0.0001 {
-                sinc = cutoffNormalized
-            } else {
-                sinc = sin(Float.pi * cutoffNormalized * n) / (Float.pi * n)
-            }
-            // Hann window
-            let window = 0.5 * (1.0 - cos(2.0 * Float.pi * Float(i) / Float(filterLength - 1)))
-            firFilter[i] = sinc * window
-        }
-
-        // Normalize filter
-        let filterSum = firFilter.reduce(0, +)
-        if filterSum > 0 {
-            for i in 0..<filterLength {
-                firFilter[i] /= filterSum
-            }
-        }
-
-        // Apply FIR filter and decimate with vDSP_desamp
-        let outputSamples = min((intermediateCount - filterLength) / stage2Decimation, maxPCMSamples)
+        let totalDSDBits = ch0Bytes.count * 8
+        let outputSamples = min(totalDSDBits / R, maxPCMSamples)
         guard outputSamples > 0 else {
             throw AudioReaderError.dsfParseError("Could not decode any samples")
         }
 
         var monoSamples = [Float](repeating: 0, count: outputSamples)
-        vDSP_desamp(intermediate, vDSP_Stride(stage2Decimation), firFilter,
-                    &monoSamples, vDSP_Length(outputSamples), vDSP_Length(filterLength))
 
-        // Normalize: DSD crude conversion produces very low levels.
-        // Scale so peak reaches -1 dBFS (0.89), matching proper DSD-to-PCM converters.
-        var peak: Float = 0
-        vDSP_maxmgv(monoSamples, 1, &peak, vDSP_Length(outputSamples))
-        if peak > 0.0001 {
-            let targetPeak: Float = 0.89 // -1 dBFS
-            var gain = targetPeak / peak
-            vDSP_vsmul(monoSamples, 1, &gain, &monoSamples, 1, vDSP_Length(outputSamples))
+        // CIC gain = R^N. Use Double to avoid overflow issues.
+        let cicGain = pow(Double(R), Double(cicOrder))
+        let invGain = Float(1.0 / cicGain)
+
+        var bitCounter = 0
+        var sampleIdx = 0
+
+        for byte in ch0Bytes {
+            // DSF stores LSB first within each byte
+            for bitPos in 0..<8 {
+                let bit = Int64((byte >> bitPos) & 1)
+                let x: Int64 = bit == 1 ? 1 : -1
+
+                // Integrator stages (recursive accumulation)
+                integrators[0] += x
+                for s in 1..<cicOrder {
+                    integrators[s] += integrators[s - 1]
+                }
+
+                bitCounter += 1
+                if bitCounter == R {
+                    // Comb stages (differencing with delay)
+                    var combIn = integrators[cicOrder - 1]
+                    for s in 0..<cicOrder {
+                        let delayed = combPrev[s]
+                        combPrev[s] = combIn
+                        combIn = combIn - delayed
+                    }
+
+                    if sampleIdx < outputSamples {
+                        monoSamples[sampleIdx] = Float(combIn) * invGain
+                        sampleIdx += 1
+                    }
+                    bitCounter = 0
+                }
+            }
+            if sampleIdx >= outputSamples { break }
         }
+
+        // CIC compensation FIR: correct the passband droop (sinc^N rolloff).
+        // Short 32-tap inverse-sinc filter, Hann-windowed, cutoff at 20kHz.
+        let compFilterLen = 32
+        var compFilter = [Float](repeating: 0, count: compFilterLen)
+        let compCenter = Float(compFilterLen - 1) / 2.0
+        let compCutoff = Float(20000.0 / pcmSampleRate) * 2.0
+
+        for i in 0..<compFilterLen {
+            let n = Float(i) - compCenter
+            // Base sinc
+            let sinc: Float
+            if abs(n) < 0.0001 {
+                sinc = compCutoff
+            } else {
+                sinc = sin(Float.pi * compCutoff * n) / (Float.pi * n)
+            }
+            // Hann window
+            let w = 0.5 * (1.0 - cos(2.0 * Float.pi * Float(i) / Float(compFilterLen - 1)))
+
+            // Inverse-sinc compensation: boost frequencies the CIC attenuated
+            // CIC response ≈ sinc(f/fs * R), so compensation ≈ 1/sinc(f) at each tap
+            let fNorm = Float(n) / Float(R)
+            let cicResponse: Float
+            if abs(fNorm) < 0.0001 {
+                cicResponse = 1.0
+            } else {
+                cicResponse = sin(Float.pi * fNorm) / (Float.pi * fNorm)
+            }
+            let compensation = abs(cicResponse) > 0.1 ? 1.0 / abs(cicResponse) : 1.0
+
+            compFilter[i] = sinc * w * min(compensation, 3.0) // cap compensation at 3x
+        }
+
+        // Normalize compensation filter
+        let compSum = compFilter.reduce(0, +)
+        if compSum > 0 {
+            for i in 0..<compFilterLen { compFilter[i] /= compSum }
+        }
+
+        // Apply compensation filter (no decimation, stride=1)
+        let compensatedCount = outputSamples - compFilterLen
+        guard compensatedCount > 0 else {
+            throw AudioReaderError.dsfParseError("Not enough samples for compensation filter")
+        }
+        var compensated = [Float](repeating: 0, count: compensatedCount)
+        vDSP_desamp(monoSamples, 1, compFilter, &compensated, vDSP_Length(compensatedCount), vDSP_Length(compFilterLen))
 
         let duration = Double(sampleCount) / dsdSampleRate
 
         return AudioData(
-            samples: monoSamples,
+            samples: compensated,
+            leftChannel: nil, // DSF: mono analysis only (ch0)
+            rightChannel: nil,
             sampleRate: pcmSampleRate,
             channels: channelCount,
             bitDepth: bitsPerSample > 0 ? bitsPerSample : 1,
