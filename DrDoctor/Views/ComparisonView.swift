@@ -137,20 +137,17 @@ struct ComparisonView: View {
             HStack(spacing: 0) {
                 Text("#").frame(width: 30)
                 Text("Track").frame(maxWidth: .infinity, alignment: .leading)
-                Group {
-                    Text("DR").frame(width: 40)
-                    Text("DR").frame(width: 40)
-                    Text("Δ").frame(width: 35)
-                }
-                Group {
-                    Text("LUFS").frame(width: 50)
-                    Text("LUFS").frame(width: 50)
-                    Text("Δ").frame(width: 40)
-                }
-                Group {
-                    Text("Peak").frame(width: 45)
-                    Text("Peak").frame(width: 45)
-                }
+                // Edition A columns
+                Text("DR").frame(width: 40)
+                Text("LUFS").frame(width: 50)
+                Text("Peak").frame(width: 45)
+                // Deltas
+                Text("Δ").frame(width: 30)
+                Text("Δ").frame(width: 35)
+                // Edition B columns
+                Text("DR").frame(width: 40)
+                Text("LUFS").frame(width: 50)
+                Text("Peak").frame(width: 45)
             }
             .font(.caption2.bold())
             .foregroundStyle(.secondary)
@@ -158,24 +155,22 @@ struct ComparisonView: View {
             .padding(.vertical, 6)
             .background(Color.secondary.opacity(0.1))
 
-            // Column color labels
+            // Column edition labels
             HStack(spacing: 0) {
                 Text("").frame(width: 30)
-                Text("").frame(maxWidth: .infinity)
-                Group {
-                    Text("A").foregroundStyle(.cyan).frame(width: 40)
-                    Text("B").foregroundStyle(.orange).frame(width: 40)
-                    Text("").frame(width: 35)
-                }
-                Group {
-                    Text("A").foregroundStyle(.cyan).frame(width: 50)
-                    Text("B").foregroundStyle(.orange).frame(width: 50)
-                    Text("").frame(width: 40)
-                }
-                Group {
-                    Text("A").foregroundStyle(.cyan).frame(width: 45)
-                    Text("B").foregroundStyle(.orange).frame(width: 45)
-                }
+                Text("Click values to see track detail").font(.system(size: 8)).foregroundStyle(.quaternary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // A
+                Text("A").foregroundStyle(.cyan).frame(width: 40)
+                Text("A").foregroundStyle(.cyan).frame(width: 50)
+                Text("A").foregroundStyle(.cyan).frame(width: 45)
+                // Deltas
+                Text("").frame(width: 30)
+                Text("").frame(width: 35)
+                // B
+                Text("B").foregroundStyle(.orange).frame(width: 40)
+                Text("B").foregroundStyle(.orange).frame(width: 50)
+                Text("B").foregroundStyle(.orange).frame(width: 45)
             }
             .font(.system(size: 9).bold())
             .padding(.horizontal, 8)
@@ -199,47 +194,47 @@ struct ComparisonView: View {
                         .truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    // DR
-                    drCell(trackA?.analysis.dynamicRange.drScore)
-                        .frame(width: 40)
-                        .foregroundStyle(.cyan)
-                    drCell(trackB?.analysis.dynamicRange.drScore)
-                        .frame(width: 40)
-                        .foregroundStyle(.orange)
+                    // Edition A values (clickable → track A detail)
+                    HStack(spacing: 0) {
+                        drCell(trackA?.analysis.dynamicRange.drScore).frame(width: 40)
+                        lufsCell(trackA?.analysis.dynamicRange.integratedLUFS).frame(width: 50)
+                        peakCell(trackA?.analysis.clipping.truePeakDB).frame(width: 45)
+                    }
+                    .foregroundStyle(.cyan)
+                    .contentShape(Rectangle())
+                    .onTapGesture { if let a = trackA { onSelectTrack(a.analysis) } }
+                    .onHover { inside in
+                        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                    }
+
+                    // Deltas
                     deltaCell(
                         a: trackA?.analysis.dynamicRange.drScore,
                         b: trackB?.analysis.dynamicRange.drScore,
                         higherIsBetter: true
-                    ).frame(width: 35)
-
-                    // LUFS
-                    lufsCell(trackA?.analysis.dynamicRange.integratedLUFS)
-                        .frame(width: 50)
-                        .foregroundStyle(.cyan)
-                    lufsCell(trackB?.analysis.dynamicRange.integratedLUFS)
-                        .frame(width: 50)
-                        .foregroundStyle(.orange)
+                    ).frame(width: 30)
                     deltaCell(
                         a: trackA?.analysis.dynamicRange.integratedLUFS,
                         b: trackB?.analysis.dynamicRange.integratedLUFS,
-                        higherIsBetter: false // lower LUFS = more dynamic
-                    ).frame(width: 40)
+                        higherIsBetter: false
+                    ).frame(width: 35)
 
-                    // Peak
-                    peakCell(trackA?.analysis.clipping.truePeakDB)
-                        .frame(width: 45)
-                        .foregroundStyle(.cyan)
-                    peakCell(trackB?.analysis.clipping.truePeakDB)
-                        .frame(width: 45)
-                        .foregroundStyle(.orange)
+                    // Edition B values (clickable → track B detail)
+                    HStack(spacing: 0) {
+                        drCell(trackB?.analysis.dynamicRange.drScore).frame(width: 40)
+                        lufsCell(trackB?.analysis.dynamicRange.integratedLUFS).frame(width: 50)
+                        peakCell(trackB?.analysis.clipping.truePeakDB).frame(width: 45)
+                    }
+                    .foregroundStyle(.orange)
+                    .contentShape(Rectangle())
+                    .onTapGesture { if let b = trackB { onSelectTrack(b.analysis) } }
+                    .onHover { inside in
+                        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                    }
                 }
                 .font(.system(.callout, design: .monospaced))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if let a = trackA { onSelectTrack(a.analysis) }
-                }
 
                 Divider().opacity(0.3)
             }
