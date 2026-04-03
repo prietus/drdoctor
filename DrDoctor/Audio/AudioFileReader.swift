@@ -23,6 +23,7 @@ struct AudioData {
     let leftChannel: [Float]?
     let rightChannel: [Float]?
     let sampleRate: Double
+    let originalSampleRate: Double  // For DSD: the native rate (2822400 etc), for PCM: same as sampleRate
     let channels: Int
     let bitDepth: Int
     let codec: String
@@ -97,6 +98,7 @@ final class AudioFileReader {
             leftChannel: leftChannel,
             rightChannel: rightChannel,
             sampleRate: file.processingFormat.sampleRate,
+            originalSampleRate: file.processingFormat.sampleRate,
             channels: channelCount,
             bitDepth: bitDepth,
             codec: codec,
@@ -350,6 +352,7 @@ final class AudioFileReader {
             leftChannel: nil, // DSF: mono analysis only (ch0)
             rightChannel: nil,
             sampleRate: pcmSampleRate,
+            originalSampleRate: dsdSampleRate,
             channels: channelCount,
             bitDepth: bitsPerSample > 0 ? bitsPerSample : 1,
             codec: "DSD\(Int(dsdSampleRate / 44100)) (DSF)",

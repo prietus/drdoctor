@@ -3,6 +3,7 @@ import SwiftUI
 struct AnalysisResultView: View {
     let analysis: AudioAnalysis
     let onNewFile: () -> Void
+    var backLabel: String = "New File"
 
     var body: some View {
         ScrollView {
@@ -64,7 +65,7 @@ struct AnalysisResultView: View {
             Button {
                 onNewFile()
             } label: {
-                Label("New File", systemImage: "plus.circle")
+                Label(backLabel, systemImage: backLabel == "New File" ? "plus.circle" : "arrow.left.circle")
             }
             .buttonStyle(.bordered)
         }

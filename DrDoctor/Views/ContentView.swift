@@ -21,7 +21,11 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             if let analysis = analysis {
-                AnalysisResultView(analysis: analysis, onNewFile: reset)
+                AnalysisResultView(
+                    analysis: analysis,
+                    onNewFile: folderTracks != nil ? { self.analysis = nil } : reset,
+                    backLabel: folderTracks != nil ? "Back to Album" : "New File"
+                )
             } else if let tracks = folderTracks, let summary = albumSummary {
                 FolderAnalysisView(
                     tracks: tracks,
@@ -323,7 +327,7 @@ struct ContentView: View {
                     fileName: url.lastPathComponent,
                     fileExtension: url.pathExtension.uppercased(),
                     fileSize: fileSize,
-                    sampleRate: audioData.sampleRate,
+                    sampleRate: audioData.originalSampleRate,
                     bitDepth: audioData.bitDepth,
                     channels: audioData.channels,
                     duration: audioData.duration,
@@ -452,7 +456,7 @@ struct ContentView: View {
                     let fileInfo = AudioFileInfo(
                         url: fileURL, fileName: fileURL.lastPathComponent,
                         fileExtension: fileURL.pathExtension.uppercased(), fileSize: fileSize,
-                        sampleRate: audioData.sampleRate, bitDepth: audioData.bitDepth,
+                        sampleRate: audioData.originalSampleRate, bitDepth: audioData.bitDepth,
                         channels: audioData.channels, duration: audioData.duration, codec: audioData.codec
                     )
 
