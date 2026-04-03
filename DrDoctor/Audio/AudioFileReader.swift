@@ -242,10 +242,10 @@ final class AudioFileReader {
             }
         }
 
-        // 5th-order CIC decimation filter
-        // Integrator stages accumulate, comb stages differentiate after decimation.
-        // This provides sinc^5 frequency response with excellent stopband rejection.
-        let cicOrder = 5
+        // 3rd-order CIC decimation filter with wrapping arithmetic.
+        // CIC integrators grow without bound and MUST use modular arithmetic.
+        // The comb stages undo the wrapping, producing correct output.
+        let cicOrder = 3
         var integrators = [Int64](repeating: 0, count: cicOrder)
         var combPrev = [Int64](repeating: 0, count: cicOrder)
 
@@ -257,7 +257,7 @@ final class AudioFileReader {
 
         var monoSamples = [Float](repeating: 0, count: outputSamples)
 
-        // CIC gain = R^N. Use Double to avoid overflow issues.
+        // CIC gain = R^N
         let cicGain = pow(Double(R), Double(cicOrder))
         let invGain = Float(1.0 / cicGain)
 
@@ -270,20 +270,20 @@ final class AudioFileReader {
                 let bit = Int64((byte >> bitPos) & 1)
                 let x: Int64 = bit == 1 ? 1 : -1
 
-                // Integrator stages (recursive accumulation)
-                integrators[0] += x
+                // Integrator stages - wrapping arithmetic prevents overflow crash
+                integrators[0] &+= x
                 for s in 1..<cicOrder {
-                    integrators[s] += integrators[s - 1]
+                    integrators[s] &+= integrators[s - 1]
                 }
 
                 bitCounter += 1
                 if bitCounter == R {
-                    // Comb stages (differencing with delay)
+                    // Comb stages (differencing with delay) - wrapping arithmetic
                     var combIn = integrators[cicOrder - 1]
                     for s in 0..<cicOrder {
                         let delayed = combPrev[s]
                         combPrev[s] = combIn
-                        combIn = combIn - delayed
+                        combIn = combIn &- delayed
                     }
 
                     if sampleIdx < outputSamples {
