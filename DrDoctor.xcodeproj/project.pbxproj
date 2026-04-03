@@ -24,6 +24,7 @@
 		A10000015 /* StereoAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000017; };
 		A10000016 /* StereoImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000018; };
 		A10000017 /* FolderAnalysisView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000019; };
+		A10000018 /* ComparisonView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000020; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +47,7 @@
 		A20000017 /* StereoAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StereoAnalyzer.swift; sourceTree = "<group>"; };
 		A20000018 /* StereoImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StereoImageView.swift; sourceTree = "<group>"; };
 		A20000019 /* FolderAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderAnalysisView.swift; sourceTree = "<group>"; };
+		A20000020 /* ComparisonView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonView.swift; sourceTree = "<group>"; };
 		A30000001 /* DrDoctor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DrDoctor.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -114,6 +116,7 @@
 				A20000013 /* VerdictBadgeView.swift */,
 				A20000018 /* StereoImageView.swift */,
 				A20000019 /* FolderAnalysisView.swift */,
+				A20000020 /* ComparisonView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -211,6 +214,7 @@
 				A10000015 /* StereoAnalyzer.swift in Sources */,
 				A10000016 /* StereoImageView.swift in Sources */,
 				A10000017 /* FolderAnalysisView.swift in Sources */,
+				A10000018 /* ComparisonView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -3,13 +3,17 @@ import SwiftUI
 @Observable
 final class AppState {
     var pendingFileURL: URL?
+    var pendingCompareURLs: (URL, URL)?
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState?
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        if let url = urls.first {
+        if urls.count >= 2 {
+            // Two folders = comparison mode
+            appState?.pendingCompareURLs = (urls[0], urls[1])
+        } else if let url = urls.first {
             appState?.pendingFileURL = url
         }
     }
