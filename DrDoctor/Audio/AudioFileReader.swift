@@ -168,20 +168,25 @@ final class AudioFileReader {
         let fmtChunkSize: Int = headerData.withUnsafeBytes {
             Int($0.loadUnaligned(fromByteOffset: fmtOffset + 4, as: UInt64.self).littleEndian)
         }
+        // DSF fmt chunk layout (offsets relative to fmt start):
+        // +12: format version (uint32)   +16: format ID (uint32)
+        // +20: channel type (uint32)     +24: channel count (uint32)
+        // +28: sample rate (uint32)      +32: bits per sample (uint32)
+        // +36: sample count (uint64)     +44: block size per channel (uint32)
         let channelCount: Int = headerData.withUnsafeBytes {
-            Int($0.loadUnaligned(fromByteOffset: fmtOffset + 20, as: UInt32.self).littleEndian)
+            Int($0.loadUnaligned(fromByteOffset: fmtOffset + 24, as: UInt32.self).littleEndian)
         }
         let dsdSampleRate: Double = headerData.withUnsafeBytes {
-            Double($0.loadUnaligned(fromByteOffset: fmtOffset + 24, as: UInt32.self).littleEndian)
+            Double($0.loadUnaligned(fromByteOffset: fmtOffset + 28, as: UInt32.self).littleEndian)
         }
         let bitsPerSample: Int = headerData.withUnsafeBytes {
-            Int($0.loadUnaligned(fromByteOffset: fmtOffset + 28, as: UInt32.self).littleEndian)
+            Int($0.loadUnaligned(fromByteOffset: fmtOffset + 32, as: UInt32.self).littleEndian)
         }
         let sampleCount: UInt64 = headerData.withUnsafeBytes {
-            $0.loadUnaligned(fromByteOffset: fmtOffset + 32, as: UInt64.self).littleEndian
+            $0.loadUnaligned(fromByteOffset: fmtOffset + 36, as: UInt64.self).littleEndian
         }
         let blockSizePerChannel: Int = headerData.withUnsafeBytes {
-            Int($0.loadUnaligned(fromByteOffset: fmtOffset + 40, as: UInt32.self).littleEndian)
+            Int($0.loadUnaligned(fromByteOffset: fmtOffset + 44, as: UInt32.self).littleEndian)
         }
 
         // data chunk: right after fmt
