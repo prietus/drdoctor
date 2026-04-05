@@ -10,3 +10,6 @@ build/
 
 ## Claude
 .claude/
+
+## Release
+release.sh
