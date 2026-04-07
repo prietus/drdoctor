@@ -74,11 +74,10 @@ hdiutil create -volname "DrDoctor" -srcfolder /tmp/DrDoctorExport/DrDoctor.app \
   -ov -format UDZO "/tmp/DrDoctor-${VERSION}.dmg"
 ```
 
-### Notarize (NOT YET DONE — needs Apple ID + app-specific password)
+### Notarize
+Credentials stored in keychain profile `"DrDoctor"` (Apple ID: <YOUR_APPLE_ID>).
 ```bash
-xcrun notarytool submit /tmp/DrDoctor-${VERSION}.dmg \
-  --apple-id <APPLE_ID> --password <APP_SPECIFIC_PASSWORD> \
-  --team-id LFTD9T269J --wait
+xcrun notarytool submit /tmp/DrDoctor-${VERSION}.dmg --keychain-profile "DrDoctor" --wait
 xcrun stapler staple /tmp/DrDoctor-${VERSION}.dmg
 ```
 
@@ -89,7 +88,7 @@ rm -rf /Applications/DrDoctor.app
 cp -R /tmp/DrDoctorExport/DrDoctor.app /Applications/
 ```
 
-### Full pipeline (build → export → DMG → install)
+### Full pipeline (build → export → DMG → notarize → install)
 ```bash
 VERSION="1.0.0"
 xcodebuild -project DrDoctor.xcodeproj -scheme DrDoctor -configuration Release \
@@ -100,6 +99,8 @@ xcodebuild -exportArchive -archivePath /tmp/DrDoctor.xcarchive \
   -exportPath /tmp/DrDoctorExport -exportOptionsPlist /tmp/ExportOptions.plist && \
 hdiutil create -volname "DrDoctor" -srcfolder /tmp/DrDoctorExport/DrDoctor.app \
   -ov -format UDZO "/tmp/DrDoctor-${VERSION}.dmg" && \
+xcrun notarytool submit "/tmp/DrDoctor-${VERSION}.dmg" --keychain-profile "DrDoctor" --wait && \
+xcrun stapler staple "/tmp/DrDoctor-${VERSION}.dmg" && \
 pkill -f DrDoctor 2>/dev/null; sleep 1 && \
 rm -rf /Applications/DrDoctor.app && \
 cp -R /tmp/DrDoctorExport/DrDoctor.app /Applications/
