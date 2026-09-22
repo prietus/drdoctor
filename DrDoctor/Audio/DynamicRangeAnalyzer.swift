@@ -3,9 +3,12 @@ import Accelerate
 
 final class DynamicRangeAnalyzer {
 
-    /// Analyze dynamic range using a methodology similar to the DR Database.
-    /// Splits audio into blocks, calculates RMS and peak per block,
-    /// then computes DR from the top 20% loudest blocks.
+    /// Analyze dynamic range following the Pleasurize Music Foundation DR14 spec:
+    ///   1. Segment audio into 3-second blocks.
+    ///   2. Per-block RMS = sqrt(2 * mean(x^2)) (factor 2 is the DR14 convention).
+    ///   3. Mean RMS = quadratic mean (RMS of RMS) of the loudest 20% of blocks.
+    ///   4. Peak = second-highest absolute peak across ALL blocks.
+    ///   5. DR = 20 * log10(peak / meanRMS).
     static func analyze(samples: [Float], sampleRate: Double) -> DynamicRangeResult {
         guard !samples.isEmpty else {
             return DynamicRangeResult(
@@ -26,54 +29,48 @@ final class DynamicRangeAnalyzer {
             let blockLength = end - start
             guard blockLength > 0 else { continue }
 
-            // Calculate RMS for this block
-            var rms: Float = 0
             samples.withUnsafeBufferPointer { ptr in
                 let base = ptr.baseAddress!.advanced(by: start)
-                vDSP_rmsqv(base, 1, &rms, vDSP_Length(blockLength))
-            }
-            blockRMS[i] = rms
+                let n = vDSP_Length(blockLength)
 
-            // Calculate peak for this block
-            var peak: Float = 0
-            samples.withUnsafeBufferPointer { ptr in
-                let base = ptr.baseAddress!.advanced(by: start)
-                var absVal = [Float](repeating: 0, count: blockLength)
-                vDSP_vabs(base, 1, &absVal, 1, vDSP_Length(blockLength))
-                vDSP_maxv(absVal, 1, &peak, vDSP_Length(blockLength))
+                // DR14 RMS: sqrt(2 * sum(x^2) / N)
+                var sumSq: Float = 0
+                vDSP_svesq(base, 1, &sumSq, n)
+                blockRMS[i] = sqrtf(2.0 * sumSq / Float(blockLength))
+
+                // Block peak (max abs)
+                var peak: Float = 0
+                vDSP_maxmgv(base, 1, &peak, n)
+                blockPeaks[i] = peak
             }
-            blockPeaks[i] = peak
         }
 
-        // Sort blocks by RMS to find top 20% loudest
-        let sortedIndices = blockRMS.indices.sorted { blockRMS[$0] > blockRMS[$1] }
+        // Top 20% loudest blocks by RMS, quadratic mean (per DR14 spec)
+        let sortedRMS = blockRMS.sorted()
         let top20Count = max(1, blockCount / 5)
-        let topIndices = Array(sortedIndices.prefix(top20Count))
+        let top20RMS = sortedRMS.suffix(top20Count)
+        let avgRMS = sqrtf(top20RMS.reduce(0) { $0 + $1 * $1 } / Float(top20Count))
 
-        // Average RMS of top 20% blocks
-        var avgRMS: Float = 0
-        for idx in topIndices {
-            avgRMS += blockRMS[idx] * blockRMS[idx]
-        }
-        avgRMS = sqrt(avgRMS / Float(topIndices.count))
-
-        // Peak across top blocks
-        var topPeak: Float = 0
-        for idx in topIndices {
-            topPeak = max(topPeak, blockPeaks[idx])
+        // Second-highest peak across ALL blocks (per DR14 spec)
+        let sortedPeaks = blockPeaks.sorted()
+        let secondPeak: Float
+        if sortedPeaks.count >= 2 {
+            secondPeak = sortedPeaks[sortedPeaks.count - 2]
+        } else {
+            secondPeak = sortedPeaks.last ?? 0
         }
 
-        // Global peak and RMS
+        // True file-level peak and RMS (independent of DR14 windowing — used for crest factor / display)
         var globalPeak: Float = 0
-        vDSP_maxv(blockPeaks, 1, &globalPeak, vDSP_Length(blockCount))
+        vDSP_maxmgv(samples, 1, &globalPeak, vDSP_Length(samples.count))
 
         var globalRMS: Float = 0
         vDSP_rmsqv(samples, 1, &globalRMS, vDSP_Length(samples.count))
 
-        // DR Score = 20 * log10(topPeak / avgRMS)
+        // DR14 score
         let drScore: Double
-        if avgRMS > 0 && topPeak > 0 {
-            drScore = 20.0 * log10(Double(topPeak) / Double(avgRMS))
+        if avgRMS > 0 && secondPeak > 0 {
+            drScore = 20.0 * log10(Double(secondPeak) / Double(avgRMS))
         } else {
             drScore = 0
         }
