@@ -78,6 +78,8 @@ xcodebuild \
     -scheme DrDoctor \
     -configuration Release \
     -derivedDataPath "$DERIVED" \
+    -destination "generic/platform=macOS" \
+    ONLY_ACTIVE_ARCH=NO \
     MARKETING_VERSION="$VERSION" \
     CURRENT_PROJECT_VERSION="$VERSION" \
     CODE_SIGN_STYLE=Manual \
@@ -85,6 +87,7 @@ xcodebuild \
     DEVELOPMENT_TEAM="$TEAM_ID" \
     ENABLE_HARDENED_RUNTIME=YES \
     OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
     build \
     | grep -E "^(warning:|error:|\*\*)" || true
 
@@ -102,6 +105,18 @@ codesign --verify --deep --strict --verbose=2 "$APP_OUT"
 codesign -dv --verbose=4 "$APP_OUT" 2>&1 \
     | grep -E "(Identifier|TeamIdentifier|Authority|Timestamp|Runtime)" || true
 
+# Notarization rejects debug entitlements; catch them before uploading.
+if codesign -d --entitlements - --xml "$APP_OUT" 2>/dev/null | grep -q "get-task-allow"; then
+    echo "ERROR: app is signed with com.apple.security.get-task-allow (notarization would reject it)." >&2
+    exit 1
+fi
+ARCHS_BUILT="$(lipo -archs "$APP_OUT/Contents/MacOS/DrDoctor")"
+echo "==> Architectures: $ARCHS_BUILT"
+case "$ARCHS_BUILT" in
+    *arm64*x86_64*|*x86_64*arm64*) ;;
+    *) echo "ERROR: expected a universal binary (arm64 + x86_64)." >&2; exit 1 ;;
+esac
+
 echo "==> Creating DMG..."
 hdiutil create -volname "DrDoctor" -srcfolder "$APP_OUT" -ov -format UDZO "$DMG_OUT" >/dev/null
 
@@ -113,7 +128,14 @@ if [ "$NOTARIZE" != "1" ]; then
 fi
 
 echo "==> Submitting to Apple notarization service (this can take 1-5 min)..."
-xcrun notarytool submit "$DMG_OUT" --keychain-profile "$KEYCHAIN_PROFILE" --wait
+# notarytool exits 0 even when the submission is Invalid, so check the status.
+NOTARY_OUT="$(xcrun notarytool submit "$DMG_OUT" --keychain-profile "$KEYCHAIN_PROFILE" --wait 2>&1 | tee /dev/stderr)"
+if ! grep -q "status: Accepted" <<<"$NOTARY_OUT"; then
+    SUBMISSION_ID="$(awk '/^  id: /{print $2; exit}' <<<"$NOTARY_OUT")"
+    echo "ERROR: notarization was not accepted. Details:" >&2
+    echo "    xcrun notarytool log $SUBMISSION_ID --keychain-profile $KEYCHAIN_PROFILE" >&2
+    exit 1
+fi
 
 echo "==> Stapling notarization ticket..."
 xcrun stapler staple "$DMG_OUT"
