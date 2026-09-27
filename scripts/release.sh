@@ -119,6 +119,9 @@ esac
 
 echo "==> Creating DMG..."
 hdiutil create -volname "DrDoctor" -srcfolder "$APP_OUT" -ov -format UDZO "$DMG_OUT" >/dev/null
+# Gatekeeper only accepts the DMG itself when it carries a Developer ID signature.
+codesign --force --timestamp --sign "$SIGN_ID" "$DMG_OUT"
+codesign --verify --strict --verbose=2 "$DMG_OUT"
 
 if [ "$NOTARIZE" != "1" ]; then
     echo
