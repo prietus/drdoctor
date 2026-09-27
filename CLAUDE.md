@@ -106,23 +106,27 @@ rm -rf /Applications/DrDoctor.app && \
 cp -R /tmp/DrDoctorExport/DrDoctor.app /Applications/
 ```
 
-## Homebrew Cask
+## Releases & Homebrew Cask
 
-Tap: `prietus/homebrew-drdoctor` at `/opt/homebrew/Library/Taps/prietus/homebrew-drdoctor`
+Repo is public (MIT). Each version is a GitHub Release (`v{VERSION}` tag) with the notarized DMG attached:
+`https://github.com/prietus/drdoctor/releases/download/v{VERSION}/DrDoctor-{VERSION}.dmg`
 
-### Update cask after new DMG
+Tap: `prietus/homebrew-drdoctor` at `/opt/homebrew/Library/Taps/prietus/homebrew-drdoctor`. The cask downloads from GitHub Releases and has `livecheck` (`github_latest`); only `version` and `sha256` change per release.
+
+The local, git-ignored `release.sh VERSION "CHANGELOG"` does the whole flow: build → notarize → tag + GitHub release → site upload → cask bump → install. It refuses to run with uncommitted changes or an existing tag.
+
+### Update cask manually
 ```bash
 VERSION="1.0.0"  # new version
 SHA=$(shasum -a 256 "/tmp/DrDoctor-${VERSION}.dmg" | awk '{print $1}')
-# Update Casks/drdoctor.rb with new version and sha256
-# Then: cd /opt/homebrew/Library/Taps/prietus/homebrew-drdoctor && git add -A && git commit && git push
+# Update version and sha256 in Casks/drdoctor.rb, then:
+# brew style Casks/drdoctor.rb && brew audit --cask --online prietus/drdoctor/drdoctor
+# cd /opt/homebrew/Library/Taps/prietus/homebrew-drdoctor && git commit -am "Update to v${VERSION}" && git push
 ```
 
 ## Landing Page
 
-Hosted at `https://drdoctor.priet.us` via nginx. DMG download URL: `https://drdoctor.priet.us/downloads/DrDoctor-{VERSION}.dmg`
-
-After building new DMG, upload to server downloads directory.
+Hosted at `https://drdoctor.priet.us` via nginx. The site also serves the DMG at `https://drdoctor.priet.us/downloads/DrDoctor-{VERSION}.dmg`; `release.sh` uploads it there too.
 
 ## Known Gotchas
 
