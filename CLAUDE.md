@@ -75,9 +75,9 @@ hdiutil create -volname "DrDoctor" -srcfolder /tmp/DrDoctorExport/DrDoctor.app \
 ```
 
 ### Notarize
-Credentials stored in keychain profile `"DrDoctor"` (Apple ID: <YOUR_APPLE_ID>).
+Credentials stored in keychain profile `"notarytool-profile"` (shared with the other Developer ID apps).
 ```bash
-xcrun notarytool submit /tmp/DrDoctor-${VERSION}.dmg --keychain-profile "DrDoctor" --wait
+xcrun notarytool submit /tmp/DrDoctor-${VERSION}.dmg --keychain-profile "notarytool-profile" --wait
 xcrun stapler staple /tmp/DrDoctor-${VERSION}.dmg
 ```
 
@@ -99,7 +99,7 @@ xcodebuild -exportArchive -archivePath /tmp/DrDoctor.xcarchive \
   -exportPath /tmp/DrDoctorExport -exportOptionsPlist /tmp/ExportOptions.plist && \
 hdiutil create -volname "DrDoctor" -srcfolder /tmp/DrDoctorExport/DrDoctor.app \
   -ov -format UDZO "/tmp/DrDoctor-${VERSION}.dmg" && \
-xcrun notarytool submit "/tmp/DrDoctor-${VERSION}.dmg" --keychain-profile "DrDoctor" --wait && \
+xcrun notarytool submit "/tmp/DrDoctor-${VERSION}.dmg" --keychain-profile "notarytool-profile" --wait && \
 xcrun stapler staple "/tmp/DrDoctor-${VERSION}.dmg" && \
 pkill -f DrDoctor 2>/dev/null; sleep 1 && \
 rm -rf /Applications/DrDoctor.app && \
@@ -113,7 +113,7 @@ Repo is public (MIT). Each version is a GitHub Release (`v{VERSION}` tag) with t
 
 Tap: `prietus/homebrew-drdoctor` at `/opt/homebrew/Library/Taps/prietus/homebrew-drdoctor`. The cask downloads from GitHub Releases and has `livecheck` (`github_latest`); only `version` and `sha256` change per release.
 
-The local, git-ignored `release.sh VERSION "CHANGELOG"` does the whole flow: build → notarize → tag + GitHub release → site upload → cask bump → install. It refuses to run with uncommitted changes or an existing tag.
+`scripts/release.sh VERSION` does the whole flow (modelled on drtagger for Mac's): build → sign → DMG → notarize + staple (keychain profile `notarytool-profile`) → install to /Applications → tag + GitHub release → cask bump. Artifacts land in `dist/`. Flags: `NOTARIZE=0`, `PUBLISH=0`, `INSTALL=0`. Publishing refuses a dirty tree, a non-main branch or an existing tag. Release notes come from `--generate-notes`.
 
 ### Update cask manually
 ```bash
@@ -126,7 +126,7 @@ SHA=$(shasum -a 256 "/tmp/DrDoctor-${VERSION}.dmg" | awk '{print $1}')
 
 ## Landing Page
 
-Hosted at `https://drdoctor.priet.us` via nginx. The site also serves the DMG at `https://drdoctor.priet.us/downloads/DrDoctor-{VERSION}.dmg`; `release.sh` uploads it there too.
+Hosted at `https://drdoctor.priet.us` via nginx. Older DMGs (up to 1.1.2) are also on the site at `https://drdoctor.priet.us/downloads/`; new releases are only published on GitHub.
 
 ## Known Gotchas
 

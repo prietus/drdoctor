@@ -12,4 +12,7 @@ build/
 .claude/
 
 ## Release
-release.sh
+/release.sh
+
+## Release artifacts
+dist/
