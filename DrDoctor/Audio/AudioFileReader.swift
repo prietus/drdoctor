@@ -1,5 +1,4 @@
 import AVFoundation
-import AVFoundation
 import Accelerate
 
 enum AudioReaderError: Error, LocalizedError {
@@ -19,6 +18,7 @@ enum AudioReaderError: Error, LocalizedError {
 }
 
 struct AudioData {
+    /// Mono mix of the first `AudioFileReader.excerptSeconds`, for spectrum/clipping/waveform.
     let samples: [Float]
     let leftChannel: [Float]?
     let rightChannel: [Float]?
@@ -28,16 +28,86 @@ struct AudioData {
     let bitDepth: Int
     let codec: String
     let duration: TimeInterval
+    /// DR14 measured over the whole track, every channel.
+    let dr14: DR14Meter.Result
 }
 
 final class AudioFileReader {
 
+    /// Length of the decoded excerpt kept for spectrum, stereo, clipping and waveform.
+    /// DR is not limited by this: the whole file is streamed through `DR14Meter`.
+    static let excerptSeconds = 30.0
+
     static func read(url: URL) async throws -> AudioData {
         let ext = url.pathExtension.lowercased()
+        let isRemote = url.scheme == "http" || url.scheme == "https"
+
+        if isRemote {
+            // AVAssetReader/AVAudioFile only read local files, and DR14 needs every
+            // sample anyway, so fetch the whole file to temp first.
+            let localURL = try await downloadToTemp(url: url)
+            defer { try? FileManager.default.removeItem(at: localURL) }
+            if ext == "dsf" || ext == "dff" {
+                return try readDSF(url: localURL)
+            }
+            return try readWithAVFoundation(url: localURL)
+        }
+
         if ext == "dsf" || ext == "dff" {
             return try readDSF(url: url)
         }
         return try readWithAVFoundation(url: url)
+    }
+
+    // Extract credentials from URL and set Authorization header explicitly
+    private static func addAuth(to request: inout URLRequest, from url: URL) {
+        if let user = url.user, let pass = url.password {
+            let cred = "\(user):\(pass)"
+            if let data = cred.data(using: .utf8) {
+                request.setValue("Basic \(data.base64EncodedString())", forHTTPHeaderField: "Authorization")
+            }
+        }
+    }
+
+    // Strip credentials from URL (URLSession can choke on embedded user:pass)
+    private static func sanitizedURL(_ url: URL) -> URL {
+        guard url.user != nil else { return url }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.user = nil
+        components.password = nil
+        return components.url ?? url
+    }
+
+    // Whole file: DR14 needs every sample, so a partial download is not enough.
+    private static func downloadToTemp(url: URL) async throws -> URL {
+        var request = URLRequest(url: sanitizedURL(url), timeoutInterval: 120)
+        request.httpMethod = "GET"
+        addAuth(to: &request, from: url)
+
+        let (tempURL, response) = try await URLSession.shared.download(for: request)
+
+        if let http = response as? HTTPURLResponse,
+           !(200...299).contains(http.statusCode) {
+            throw AudioReaderError.readError("HTTP \(http.statusCode) downloading \(url.lastPathComponent)")
+        }
+
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + "_" + url.lastPathComponent)
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.moveItem(at: tempURL, to: dest)
+        return dest
+    }
+
+    /// Mono mix plus L/R (when stereo or wider) from per-channel excerpt samples.
+    private static func mixExcerpt(_ channels: [[Float]]) -> (mono: [Float], left: [Float]?, right: [Float]?) {
+        let frameCount = channels.first?.count ?? 0
+        var mono = [Float](repeating: 0, count: frameCount)
+        var scale = Float(1.0 / Double(max(channels.count, 1)))
+        for channel in channels {
+            vDSP_vsma(channel, 1, &scale, mono, 1, &mono, 1, vDSP_Length(frameCount))
+        }
+        guard channels.count >= 2 else { return (mono, nil, nil) }
+        return (mono, channels[0], channels[1])
     }
 
     // MARK: - AVFoundation Reader (WAV, FLAC, AIFF, ALAC, MP3, AAC, etc.)
@@ -50,59 +120,58 @@ final class AudioFileReader {
             throw AudioReaderError.readError(error.localizedDescription)
         }
 
-        let processingFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: file.processingFormat.sampleRate,
-            channels: file.processingFormat.channelCount,
-            interleaved: false
-        )!
+        let format = file.processingFormat  // deinterleaved Float32
+        let sampleRate = format.sampleRate
+        let channelCount = Int(format.channelCount)
+        let excerptFrames = Int(sampleRate * excerptSeconds)
 
-        // Cap to 30 seconds for analysis - no need to decode a full album track
-        let maxFrames = AVAudioFrameCount(file.processingFormat.sampleRate * 30)
-        let frameCount = min(AVAudioFrameCount(file.length), maxFrames)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: frameCount) else {
+        let chunkFrames: AVAudioFrameCount = 65536
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunkFrames) else {
             throw AudioReaderError.readError("Could not create audio buffer")
         }
-        buffer.frameLength = frameCount
 
-        try file.read(into: buffer, frameCount: frameCount)
+        // Decode the whole file in chunks: every frame goes through the DR meter,
+        // only the first `excerptSeconds` are kept for the other analyzers.
+        var meter = DR14Meter(channelCount: channelCount, sampleRate: sampleRate)
+        var excerpt = [[Float]](repeating: [], count: channelCount)
+        for ch in 0..<channelCount { excerpt[ch].reserveCapacity(min(excerptFrames, Int(file.length))) }
 
-        let channelCount = Int(processingFormat.channelCount)
-        let sampleCount = Int(buffer.frameLength)
+        while file.framePosition < file.length {
+            do {
+                try file.read(into: buffer, frameCount: chunkFrames)
+            } catch {
+                // Some decoders overestimate `length`; stop at the real end once we have audio.
+                if excerpt.first?.isEmpty ?? true { throw AudioReaderError.readError(error.localizedDescription) }
+                break
+            }
+            let n = Int(buffer.frameLength)
+            guard n > 0, let data = buffer.floatChannelData else { break }
 
-        // Preserve individual channels for stereo analysis
-        var leftChannel: [Float]?
-        var rightChannel: [Float]?
+            meter.process(channels: (0..<channelCount).map { UnsafePointer(data[$0]) }, frames: n)
 
-        if channelCount >= 2,
-           let leftData = buffer.floatChannelData?[0],
-           let rightData = buffer.floatChannelData?[1] {
-            leftChannel = Array(UnsafeBufferPointer(start: leftData, count: sampleCount))
-            rightChannel = Array(UnsafeBufferPointer(start: rightData, count: sampleCount))
+            let take = min(n, excerptFrames - excerpt[0].count)
+            if take > 0 {
+                for ch in 0..<channelCount {
+                    excerpt[ch].append(contentsOf: UnsafeBufferPointer(start: data[ch], count: take))
+                }
+            }
         }
 
-        // Mix to mono for analysis
-        var monoSamples = [Float](repeating: 0, count: sampleCount)
-        var scale = Float(1.0 / Double(channelCount))
-
-        for ch in 0..<channelCount {
-            guard let channelData = buffer.floatChannelData?[ch] else { continue }
-            vDSP_vsma(channelData, 1, &scale, monoSamples, 1, &monoSamples, 1, vDSP_Length(sampleCount))
-        }
-
+        let (mono, left, right) = mixExcerpt(excerpt)
         let bitDepth = detectBitDepth(file: file)
         let codec = detectCodec(url: url, file: file)
 
         return AudioData(
-            samples: monoSamples,
-            leftChannel: leftChannel,
-            rightChannel: rightChannel,
-            sampleRate: file.processingFormat.sampleRate,
-            originalSampleRate: file.processingFormat.sampleRate,
+            samples: mono,
+            leftChannel: left,
+            rightChannel: right,
+            sampleRate: sampleRate,
+            originalSampleRate: sampleRate,
             channels: channelCount,
             bitDepth: bitDepth,
             codec: codec,
-            duration: Double(file.length) / file.processingFormat.sampleRate
+            duration: Double(file.length) / sampleRate,
+            dr14: meter.finish()
         )
     }
 
@@ -198,77 +267,40 @@ final class AudioFileReader {
             throw AudioReaderError.dsfParseError("Invalid data chunk")
         }
         let dataPayloadOffset = dataChunkOffset + 12
+        let dataChunkSize: Int = headerData.withUnsafeBytes {
+            Int($0.loadUnaligned(fromByteOffset: dataChunkOffset + 4, as: UInt64.self).littleEndian)
+        }
 
         let blockSize = blockSizePerChannel > 0 ? blockSizePerChannel : 4096
-        let interleaveBlockSize = blockSize * channelCount
-        let availableDataBytes = totalFileSize - dataPayloadOffset
-
+        let channels = max(channelCount, 1)
+        let interleaveBlockSize = blockSize * channels
+        // The data chunk is followed by an ID3 metadata chunk, so bound by the chunk
+        // size, not the file size. The file may also be shorter than declared.
+        let actualFileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? totalFileSize
+        let availableDataBytes = min(dataChunkSize - 12, min(totalFileSize, actualFileSize) - dataPayloadOffset)
         let totalBlocks = availableDataBytes / interleaveBlockSize
         guard totalBlocks > 0 else {
             throw AudioReaderError.dsfParseError("No audio data to decode")
         }
+        // The last block of each channel is zero-padded past `sampleCount` bits.
+        let bytesPerChannel = min(Int((sampleCount + 7) / 8), totalBlocks * blockSize)
 
         let pcmSampleRate = 44100.0
         // Decimation ratio: DSD64=64, DSD128=128, DSD256=256
-        let R = Int(dsdSampleRate / pcmSampleRate)
-        guard R > 0 else {
+        guard Int(dsdSampleRate / pcmSampleRate) > 0 else {
             throw AudioReaderError.dsfParseError("Invalid DSD sample rate for decimation")
-        }
-
-        // Calculate how many ch0 bytes we need for ~30s of output
-        let maxPCMSamples = Int(pcmSampleRate * 30)
-        let dsdBitsNeeded = maxPCMSamples * R
-        let ch0BytesNeeded = (dsdBitsNeeded + 7) / 8
-        let blocksNeeded = min((ch0BytesNeeded + blockSize - 1) / blockSize, totalBlocks)
-
-        // ONE sequential read from data start
-        let bytesToRead = blocksNeeded * interleaveBlockSize
-        try fh.seek(toOffset: UInt64(dataPayloadOffset))
-        guard let rawData = try fh.read(upToCount: bytesToRead), !rawData.isEmpty else {
-            throw AudioReaderError.dsfParseError("Could not read audio data")
-        }
-
-        // Extract ch0 bytes from interleaved blocks in memory
-        var ch0Bytes = [UInt8]()
-        ch0Bytes.reserveCapacity(blocksNeeded * blockSize)
-
-        rawData.withUnsafeBytes { raw in
-            let ptr = raw.baseAddress!.assumingMemoryBound(to: UInt8.self)
-            var offset = 0
-            while offset + interleaveBlockSize <= raw.count && ch0Bytes.count < ch0BytesNeeded {
-                ch0Bytes.append(contentsOf: UnsafeBufferPointer(start: ptr + offset, count: blockSize))
-                offset += interleaveBlockSize
-            }
         }
 
         // Two-stage DSD→PCM decimation (fast + accurate):
         // Stage 1: byte-level popcount → intermediate rate (1 byte = 1 sample at DSD_rate/8)
         // Stage 2: FIR decimation with vDSP → 44.1kHz output
-        //
-        // This matches CIC quality while being ~50x faster than bit-by-bit processing.
-
-        // Popcount lookup table
-        var popcountTable = [UInt8](repeating: 0, count: 256)
+        var popcountTable = [Float](repeating: 0, count: 256)
         for i in 0..<256 {
-            var count: UInt8 = 0
-            var val = i
-            while val != 0 { count += 1; val &= val - 1 }
-            popcountTable[i] = count
+            // Map 0..8 ones to -1..+1
+            popcountTable[i] = Float(i.nonzeroBitCount) * 0.25 - 1.0
         }
 
-        // Stage 1: each byte → one intermediate sample (DSD_rate/8 Hz)
         let intermediateSampleRate = dsdSampleRate / 8.0
-        let intermediateCount = ch0Bytes.count
-        var intermediate = [Float](repeating: 0, count: intermediateCount)
-
-        ch0Bytes.withUnsafeBufferPointer { ptr in
-            for i in 0..<intermediateCount {
-                // Map 0..8 ones to -1..+1
-                intermediate[i] = Float(popcountTable[Int(ptr[i])]) * 0.25 - 1.0
-            }
-        }
-
-        // Stage 2: FIR decimation from intermediate rate to 44.1kHz
         let stage2R = Int(intermediateSampleRate / pcmSampleRate) // 8 for DSD64, 32 for DSD256
         guard stage2R > 0 else {
             throw AudioReaderError.dsfParseError("Invalid stage-2 decimation ratio")
@@ -288,7 +320,7 @@ final class AudioFileReader {
             } else {
                 sinc = sin(Float.pi * firCutoff * n) / (Float.pi * n)
             }
-            // Kaiser-like window for better stopband rejection
+            // Blackman window for better stopband rejection
             let w = 0.42 - 0.5 * cos(2.0 * Float.pi * Float(i) / Float(firLen - 1))
                 + 0.08 * cos(4.0 * Float.pi * Float(i) / Float(firLen - 1))
             firFilter[i] = sinc * w
@@ -297,27 +329,103 @@ final class AudioFileReader {
         let firSum = firFilter.reduce(0, +)
         if firSum > 0 { for i in 0..<firLen { firFilter[i] /= firSum } }
 
-        // Decimate with vDSP_desamp (applies FIR + downsamples in one pass)
-        let outputSamples = min((intermediateCount - firLen) / stage2R, maxPCMSamples)
-        guard outputSamples > 0 else {
+        // Decode the whole file, a group of interleaved blocks at a time. Each channel
+        // keeps its unconsumed intermediate samples so the FIR runs seamlessly across reads.
+        var meter = DR14Meter(channelCount: channels, sampleRate: pcmSampleRate)
+        let excerptFrames = Int(pcmSampleRate * excerptSeconds)
+        var excerpt = [[Float]](repeating: [], count: channels)
+        var pending = [[Float]](repeating: [], count: channels)
+        var channelBytesRead = 0
+        var indices = [Float](repeating: 0, count: blockSize)
+        let blocksPerRead = 64
+
+        try fh.seek(toOffset: UInt64(dataPayloadOffset))
+        var blocksLeft = totalBlocks
+        while blocksLeft > 0, channelBytesRead < bytesPerChannel {
+            let blocks = min(blocksPerRead, blocksLeft)
+            guard let raw = try fh.read(upToCount: blocks * interleaveBlockSize), !raw.isEmpty else { break }
+            let blocksRead = raw.count / interleaveBlockSize
+            guard blocksRead > 0 else { break }
+            blocksLeft -= blocksRead
+
+            let usefulBytes = min(blocksRead * blockSize, bytesPerChannel - channelBytesRead)
+            channelBytesRead += usefulBytes
+
+            var pcm = [[Float]](repeating: [], count: channels)
+            raw.withUnsafeBytes { rawPtr in
+                let bytes = rawPtr.bindMemory(to: UInt8.self)
+                for ch in 0..<channels {
+                    // Stage 1: popcount this channel's bytes out of the interleaved blocks.
+                    // Bytes become float indices into the table (vDSP_vfltu8 + vDSP_vindex)
+                    // instead of a per-byte Swift loop.
+                    let carried = pending[ch].count
+                    pending[ch].append(contentsOf: repeatElement(0, count: usefulBytes))
+                    indices.withUnsafeMutableBufferPointer { idx in
+                        pending[ch].withUnsafeMutableBufferPointer { dst in
+                            var copied = 0
+                            var block = 0
+                            while copied < usefulBytes {
+                                let n = min(blockSize, usefulBytes - copied)
+                                let src = bytes.baseAddress! + block * interleaveBlockSize + ch * blockSize
+                                vDSP_vfltu8(src, 1, idx.baseAddress!, 1, vDSP_Length(n))
+                                vDSP_vindex(popcountTable, idx.baseAddress!, 1,
+                                            dst.baseAddress! + carried + copied, 1, vDSP_Length(n))
+                                copied += n
+                                block += 1
+                            }
+                        }
+                    }
+
+                    // Stage 2: FIR decimate everything a full filter window is available for
+                    guard pending[ch].count >= firLen else { continue }
+                    let outCount = (pending[ch].count - firLen) / stage2R + 1
+                    var out = [Float](repeating: 0, count: outCount)
+                    vDSP_desamp(pending[ch], vDSP_Stride(stage2R), firFilter, &out,
+                                vDSP_Length(outCount), vDSP_Length(firLen))
+                    pending[ch].removeFirst(outCount * stage2R)
+                    pcm[ch] = out
+                }
+            }
+
+            let frames = pcm.map(\.count).min() ?? 0
+            guard frames > 0 else { continue }
+            pcm.withUnsafeBufferPointers { pointers in
+                meter.process(channels: pointers, frames: frames)
+            }
+            let take = min(frames, excerptFrames - excerpt[0].count)
+            if take > 0 {
+                for ch in 0..<channels { excerpt[ch].append(contentsOf: pcm[ch].prefix(take)) }
+            }
+        }
+
+        guard !excerpt[0].isEmpty else {
             throw AudioReaderError.dsfParseError("Not enough data for decimation")
         }
-        var compensated = [Float](repeating: 0, count: outputSamples)
-        vDSP_desamp(intermediate, vDSP_Stride(stage2R), firFilter, &compensated,
-                    vDSP_Length(outputSamples), vDSP_Length(firLen))
 
-        let duration = Double(sampleCount) / dsdSampleRate
+        let (mono, left, right) = mixExcerpt(excerpt)
 
         return AudioData(
-            samples: compensated,
-            leftChannel: nil, // DSF: mono analysis only (ch0)
-            rightChannel: nil,
+            samples: mono,
+            leftChannel: left,
+            rightChannel: right,
             sampleRate: pcmSampleRate,
             originalSampleRate: dsdSampleRate,
             channels: channelCount,
             bitDepth: bitsPerSample > 0 ? bitsPerSample : 1,
             codec: "DSD\(Int(dsdSampleRate / 44100)) (DSF)",
-            duration: duration
+            duration: Double(sampleCount) / dsdSampleRate,
+            dr14: meter.finish()
         )
+    }
+}
+
+private extension Array where Element == [Float] {
+    /// Stable base pointers for each inner array, valid for the duration of `body`.
+    func withUnsafeBufferPointers<R>(_ body: ([UnsafePointer<Float>]) -> R) -> R {
+        func recurse(_ index: Int, _ acc: [UnsafePointer<Float>]) -> R {
+            guard index < count else { return body(acc) }
+            return self[index].withUnsafeBufferPointer { recurse(index + 1, acc + [$0.baseAddress!]) }
+        }
+        return recurse(0, [])
     }
 }

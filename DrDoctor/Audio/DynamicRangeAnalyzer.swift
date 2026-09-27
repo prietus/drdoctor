@@ -3,96 +3,21 @@ import Accelerate
 
 final class DynamicRangeAnalyzer {
 
-    /// Analyze dynamic range following the Pleasurize Music Foundation DR14 spec:
-    ///   1. Segment audio into 3-second blocks.
-    ///   2. Per-block RMS = sqrt(2 * mean(x^2)) (factor 2 is the DR14 convention).
-    ///   3. Mean RMS = quadratic mean (RMS of RMS) of the loudest 20% of blocks.
-    ///   4. Peak = second-highest absolute peak across ALL blocks.
-    ///   5. DR = 20 * log10(peak / meanRMS).
-    static func analyze(samples: [Float], sampleRate: Double) -> DynamicRangeResult {
-        guard !samples.isEmpty else {
-            return DynamicRangeResult(
-                drScore: 0, peakDB: -100, rmsDB: -100,
-                crestFactor: 0, integratedLUFS: -100, loudnessRange: 0
-            )
-        }
-
-        let blockSize = Int(sampleRate * 3.0) // 3-second blocks
-        let blockCount = max(1, samples.count / blockSize)
-
-        var blockRMS = [Float](repeating: 0, count: blockCount)
-        var blockPeaks = [Float](repeating: 0, count: blockCount)
-
-        for i in 0..<blockCount {
-            let start = i * blockSize
-            let end = min(start + blockSize, samples.count)
-            let blockLength = end - start
-            guard blockLength > 0 else { continue }
-
-            samples.withUnsafeBufferPointer { ptr in
-                let base = ptr.baseAddress!.advanced(by: start)
-                let n = vDSP_Length(blockLength)
-
-                // DR14 RMS: sqrt(2 * sum(x^2) / N)
-                var sumSq: Float = 0
-                vDSP_svesq(base, 1, &sumSq, n)
-                blockRMS[i] = sqrtf(2.0 * sumSq / Float(blockLength))
-
-                // Block peak (max abs)
-                var peak: Float = 0
-                vDSP_maxmgv(base, 1, &peak, n)
-                blockPeaks[i] = peak
-            }
-        }
-
-        // Top 20% loudest blocks by RMS, quadratic mean (per DR14 spec)
-        let sortedRMS = blockRMS.sorted()
-        let top20Count = max(1, blockCount / 5)
-        let top20RMS = sortedRMS.suffix(top20Count)
-        let avgRMS = sqrtf(top20RMS.reduce(0) { $0 + $1 * $1 } / Float(top20Count))
-
-        // Second-highest peak across ALL blocks (per DR14 spec)
-        let sortedPeaks = blockPeaks.sorted()
-        let secondPeak: Float
-        if sortedPeaks.count >= 2 {
-            secondPeak = sortedPeaks[sortedPeaks.count - 2]
-        } else {
-            secondPeak = sortedPeaks.last ?? 0
-        }
-
-        // True file-level peak and RMS (independent of DR14 windowing — used for crest factor / display)
-        var globalPeak: Float = 0
-        vDSP_maxmgv(samples, 1, &globalPeak, vDSP_Length(samples.count))
-
-        var globalRMS: Float = 0
-        vDSP_rmsqv(samples, 1, &globalRMS, vDSP_Length(samples.count))
-
-        // DR14 score
-        let drScore: Double
-        if avgRMS > 0 && secondPeak > 0 {
-            drScore = 20.0 * log10(Double(secondPeak) / Double(avgRMS))
-        } else {
-            drScore = 0
-        }
-
-        let peakDB = globalPeak > 0 ? 20.0 * log10(Double(globalPeak)) : -100.0
-        let rmsDB = globalRMS > 0 ? 20.0 * log10(Double(globalRMS)) : -100.0
-        let crestFactor = globalRMS > 0 ? Double(globalPeak) / Double(globalRMS) : 0
-
-        // Simplified LUFS (integrated loudness approximation)
-        // True LUFS requires K-weighting filter; this is an approximation
-        let lufs = computeApproximateLUFS(samples: samples, sampleRate: sampleRate)
-
-        // Loudness Range (LRA) - difference between soft and loud parts
-        let lra = computeLoudnessRange(blockRMS: blockRMS)
+    /// Combine the full-track DR14 measurement with loudness figures from the
+    /// decoded excerpt. DR, peak, RMS, crest factor and LRA come from `dr14`,
+    /// which saw every sample of every channel; LUFS is approximated from `samples`.
+    static func analyze(dr14: DR14Meter.Result, samples: [Float], sampleRate: Double) -> DynamicRangeResult {
+        let peakDB = dr14.peak > 0 ? 20.0 * log10(Double(dr14.peak)) : -100.0
+        let rmsDB = dr14.rms > 0 ? 20.0 * log10(Double(dr14.rms)) : -100.0
+        let crestFactor = dr14.rms > 0 ? Double(dr14.peak) / Double(dr14.rms) : 0
 
         return DynamicRangeResult(
-            drScore: drScore,
+            drScore: dr14.drScore,
             peakDB: peakDB,
             rmsDB: rmsDB,
             crestFactor: crestFactor,
-            integratedLUFS: lufs,
-            loudnessRange: lra
+            integratedLUFS: computeApproximateLUFS(samples: samples, sampleRate: sampleRate),
+            loudnessRange: computeLoudnessRange(blockRMS: dr14.blockRMS)
         )
     }
 
@@ -155,5 +80,110 @@ final class DynamicRangeAnalyzer {
 
         guard p10 > 0 else { return 0 }
         return 20.0 * log10(p95 / p10)
+    }
+}
+
+/// Streaming DR14 meter (Pleasurize Music Foundation spec, as implemented by the
+/// TT DR Meter and foobar2000's DR plugin). Fed the whole track in chunks; only
+/// per-block statistics are kept, so memory does not grow with track length.
+///
+///   1. Each channel is cut into 3-second blocks (the trailing partial block counts).
+///   2. Block RMS = sqrt(2 * mean(x^2)).
+///   3. Per channel: quadratic mean of the loudest 20% of block RMS values, and
+///      the second-highest block peak.
+///   4. Channel DR = 20 * log10(peak2 / rms); track DR = mean over channels, rounded.
+struct DR14Meter {
+    struct Result {
+        let drScore: Double
+        let peak: Float        // highest sample magnitude, any channel
+        let rms: Float         // plain RMS over all samples of all channels
+        let blockRMS: [Float]  // per-block RMS averaged across channels (for LRA)
+    }
+
+    let channelCount: Int
+    private let blockFrames: Int
+    private var framesInBlock = 0
+    private var blockSumSq: [Float]
+    private var blockPeak: [Float]
+    private var channelBlockRMS: [[Float]]
+    private var channelBlockPeaks: [[Float]]
+    private var totalSumSq: Double = 0
+    private var totalFrames = 0
+    private var peak: Float = 0
+
+    init(channelCount: Int, sampleRate: Double) {
+        self.channelCount = max(channelCount, 1)
+        blockFrames = max(1, Int((sampleRate * 3.0).rounded()))
+        blockSumSq = [Float](repeating: 0, count: self.channelCount)
+        blockPeak = [Float](repeating: 0, count: self.channelCount)
+        channelBlockRMS = Array(repeating: [], count: self.channelCount)
+        channelBlockPeaks = Array(repeating: [], count: self.channelCount)
+    }
+
+    /// Feed interleaved frames (L R L R …).
+    mutating func process(interleaved samples: UnsafePointer<Float>, frames: Int) {
+        let pointers = (0..<channelCount).map { samples + $0 }
+        process(channels: pointers, stride: channelCount, frames: frames)
+    }
+
+    /// Feed one pointer per channel, each advancing by `stride` floats per frame.
+    mutating func process(channels: [UnsafePointer<Float>], stride: Int = 1, frames: Int) {
+        var offset = 0
+        while offset < frames {
+            let n = min(blockFrames - framesInBlock, frames - offset)
+            for ch in 0..<channelCount {
+                let base = channels[ch] + offset * stride
+                var sumSq: Float = 0
+                vDSP_svesq(base, vDSP_Stride(stride), &sumSq, vDSP_Length(n))
+                var p: Float = 0
+                vDSP_maxmgv(base, vDSP_Stride(stride), &p, vDSP_Length(n))
+                blockSumSq[ch] += sumSq
+                blockPeak[ch] = max(blockPeak[ch], p)
+            }
+            framesInBlock += n
+            offset += n
+            if framesInBlock == blockFrames { closeBlock() }
+        }
+    }
+
+    private mutating func closeBlock() {
+        guard framesInBlock > 0 else { return }
+        for ch in 0..<channelCount {
+            channelBlockRMS[ch].append(sqrtf(2.0 * blockSumSq[ch] / Float(framesInBlock)))
+            channelBlockPeaks[ch].append(blockPeak[ch])
+            totalSumSq += Double(blockSumSq[ch])
+            peak = max(peak, blockPeak[ch])
+            blockSumSq[ch] = 0
+            blockPeak[ch] = 0
+        }
+        totalFrames += framesInBlock
+        framesInBlock = 0
+    }
+
+    mutating func finish() -> Result {
+        closeBlock()
+
+        var channelDRs: [Double] = []
+        for ch in 0..<channelCount {
+            let rmsValues = channelBlockRMS[ch].sorted(by: >)
+            let peaks = channelBlockPeaks[ch].sorted(by: >)
+            guard !rmsValues.isEmpty else { continue }
+
+            let topCount = max(1, Int(Double(rmsValues.count) * 0.2))
+            let topRMS = sqrtf(rmsValues.prefix(topCount).reduce(0) { $0 + $1 * $1 } / Float(topCount))
+            let secondPeak = peaks.count >= 2 ? peaks[1] : peaks[0]
+            // A silent channel (e.g. mono stored as stereo) has no meaningful DR.
+            guard topRMS > 0, secondPeak > 0 else { continue }
+            channelDRs.append(20.0 * log10(Double(secondPeak) / Double(topRMS)))
+        }
+        let dr = channelDRs.isEmpty ? 0 : (channelDRs.reduce(0, +) / Double(channelDRs.count)).rounded()
+
+        let blockCount = channelBlockRMS.map(\.count).min() ?? 0
+        let blockRMS = (0..<blockCount).map { i in
+            channelBlockRMS.reduce(0) { $0 + $1[i] } / Float(channelCount)
+        }
+        let rms = totalFrames > 0 ? Float(sqrt(totalSumSq / Double(totalFrames * channelCount))) : 0
+
+        return Result(drScore: dr, peak: peak, rms: rms, blockRMS: blockRMS)
     }
 }

@@ -298,6 +298,7 @@ struct ContentView: View {
 
                 // Step 2: Dynamic range analysis
                 let drResult = DynamicRangeAnalyzer.analyze(
+                    dr14: audioData.dr14,
                     samples: audioData.samples,
                     sampleRate: audioData.sampleRate
                 )
@@ -418,6 +419,56 @@ struct ContentView: View {
 
     // MARK: - Shared Analysis Helper
 
+    /// Tracks analyzed at once in folder analysis (matches drobimobile).
+    private nonisolated static let maxConcurrentTracks = 3
+
+    private nonisolated static func analyzeTrack(url fileURL: URL, trackNumber trackNum: Int) async throws -> TrackSummary {
+        let fm = FileManager.default
+        let audioData = try await AudioFileReader.read(url: fileURL)
+
+        let drResult = DynamicRangeAnalyzer.analyze(dr14: audioData.dr14, samples: audioData.samples, sampleRate: audioData.sampleRate)
+        let spectralResult = SpectralAnalyzer.analyze(samples: audioData.samples, sampleRate: audioData.sampleRate)
+        let clippingResult = ClippingDetector.analyze(samples: audioData.samples, sampleRate: audioData.sampleRate)
+
+        let stereoResult: StereoImageResult?
+        if let left = audioData.leftChannel, let right = audioData.rightChannel {
+            stereoResult = StereoAnalyzer.analyze(left: left, right: right, sampleRate: audioData.sampleRate)
+        } else {
+            stereoResult = nil
+        }
+
+        let waveform = generateWaveformData(samples: audioData.samples)
+        let isDSD = audioData.codec.uppercased().contains("DSD")
+        let spectrumDisplay = SpectrumData(
+            magnitudes: spectralResult.averageSpectrum,
+            frequencies: spectralResult.frequencyBins,
+            cutoffMarker: isDSD ? nil : spectralResult.detectedCutoffHz.map { Float($0) }
+        )
+        let verdict = MasteringVerdictEngine.evaluate(
+            dynamicRange: drResult, spectral: spectralResult,
+            clipping: clippingResult, codec: audioData.codec
+        )
+
+        let fileSize = (try? fm.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
+        let fileInfo = AudioFileInfo(
+            url: fileURL, fileName: fileURL.lastPathComponent,
+            fileExtension: fileURL.pathExtension.uppercased(), fileSize: fileSize,
+            sampleRate: audioData.originalSampleRate, bitDepth: audioData.bitDepth,
+            channels: audioData.channels, duration: audioData.duration, codec: audioData.codec
+        )
+
+        let trackAnalysis = AudioAnalysis(
+            fileInfo: fileInfo, dynamicRange: drResult, spectral: spectralResult,
+            clipping: clippingResult, stereoImage: stereoResult,
+            verdict: verdict, waveformData: waveform, spectrumData: spectrumDisplay
+        )
+
+        return TrackSummary(
+            trackNumber: trackNum, fileName: fileURL.deletingPathExtension().lastPathComponent,
+            url: fileURL, analysis: trackAnalysis
+        )
+    }
+
     private static func analyzeTracksInFolder(
         url: URL,
         progress: @Sendable @escaping (Double, String) async -> Void
@@ -432,57 +483,29 @@ struct ContentView: View {
             throw AudioReaderError.readError("No audio files found in this folder.")
         }
 
-        var tracks = [TrackSummary]()
+        await progress(0, "Analyzing \(audioFiles.count) tracks…")
 
-        for (index, fileURL) in audioFiles.enumerated() {
-            let trackNum = index + 1
-            await progress(Double(index) / Double(audioFiles.count),
-                          "Analyzing \(trackNum)/\(audioFiles.count): \(fileURL.lastPathComponent)")
-
-            let audioData = try await AudioFileReader.read(url: fileURL)
-
-            let drResult = DynamicRangeAnalyzer.analyze(samples: audioData.samples, sampleRate: audioData.sampleRate)
-            let spectralResult = SpectralAnalyzer.analyze(samples: audioData.samples, sampleRate: audioData.sampleRate)
-            let clippingResult = ClippingDetector.analyze(samples: audioData.samples, sampleRate: audioData.sampleRate)
-
-            let stereoResult: StereoImageResult?
-            if let left = audioData.leftChannel, let right = audioData.rightChannel {
-                stereoResult = StereoAnalyzer.analyze(left: left, right: right, sampleRate: audioData.sampleRate)
-            } else {
-                stereoResult = nil
+        var results = [TrackSummary?](repeating: nil, count: audioFiles.count)
+        var done = 0
+        try await withThrowingTaskGroup(of: (Int, TrackSummary).self) { group in
+            var next = 0
+            func startNext() {
+                guard next < audioFiles.count else { return }
+                let index = next
+                next += 1
+                group.addTask { (index, try await analyzeTrack(url: audioFiles[index], trackNumber: index + 1)) }
             }
+            for _ in 0..<maxConcurrentTracks { startNext() }
 
-            let waveform = generateWaveformData(samples: audioData.samples)
-            let isDSD = audioData.codec.uppercased().contains("DSD")
-            let spectrumDisplay = SpectrumData(
-                magnitudes: spectralResult.averageSpectrum,
-                frequencies: spectralResult.frequencyBins,
-                cutoffMarker: isDSD ? nil : spectralResult.detectedCutoffHz.map { Float($0) }
-            )
-            let verdict = MasteringVerdictEngine.evaluate(
-                dynamicRange: drResult, spectral: spectralResult,
-                clipping: clippingResult, codec: audioData.codec
-            )
-
-            let fileSize = (try? fm.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
-            let fileInfo = AudioFileInfo(
-                url: fileURL, fileName: fileURL.lastPathComponent,
-                fileExtension: fileURL.pathExtension.uppercased(), fileSize: fileSize,
-                sampleRate: audioData.originalSampleRate, bitDepth: audioData.bitDepth,
-                channels: audioData.channels, duration: audioData.duration, codec: audioData.codec
-            )
-
-            let trackAnalysis = AudioAnalysis(
-                fileInfo: fileInfo, dynamicRange: drResult, spectral: spectralResult,
-                clipping: clippingResult, stereoImage: stereoResult,
-                verdict: verdict, waveformData: waveform, spectrumData: spectrumDisplay
-            )
-
-            tracks.append(TrackSummary(
-                trackNumber: trackNum, fileName: fileURL.deletingPathExtension().lastPathComponent,
-                url: fileURL, analysis: trackAnalysis
-            ))
+            while let (index, track) = try await group.next() {
+                results[index] = track
+                done += 1
+                await progress(Double(done) / Double(audioFiles.count),
+                              "Analyzing \(done)/\(audioFiles.count): \(audioFiles[index].lastPathComponent)")
+                startNext()
+            }
         }
+        let tracks = results.compactMap { $0 }
 
         let avgDR = tracks.map(\.analysis.dynamicRange.drScore).reduce(0, +) / Double(tracks.count)
         let avgLUFS = tracks.map(\.analysis.dynamicRange.integratedLUFS).reduce(0, +) / Double(tracks.count)
