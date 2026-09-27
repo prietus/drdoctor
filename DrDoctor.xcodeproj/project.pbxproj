@@ -12,6 +12,8 @@
 		A10000003 /* AudioAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000003; };
 		A10000004 /* AudioFileInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000004; };
 		A10000005 /* AudioFileReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000005; };
+		A10000090 /* WebDAV.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000090; };
+		A10000091 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000091; };
 		A10000006 /* DynamicRangeAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000006; };
 		A10000007 /* SpectralAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000007; };
 		A10000008 /* ClippingDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000008; };
@@ -32,6 +34,8 @@
 		A20000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A20000003 /* AudioAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioAnalysis.swift; sourceTree = "<group>"; };
 		A20000004 /* AudioFileInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFileInfo.swift; sourceTree = "<group>"; };
+		A20000090 /* WebDAV.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDAV.swift; sourceTree = "<group>"; };
+		A20000091 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A20000005 /* AudioFileReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFileReader.swift; sourceTree = "<group>"; };
 		A20000006 /* DynamicRangeAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DynamicRangeAnalyzer.swift; sourceTree = "<group>"; };
 		A20000007 /* SpectralAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpectralAnalyzer.swift; sourceTree = "<group>"; };
@@ -102,6 +106,7 @@
 				A20000008 /* ClippingDetector.swift */,
 				A20000009 /* MasteringVerdict.swift */,
 				A20000017 /* StereoAnalyzer.swift */,
+				A20000090 /* WebDAV.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -117,6 +122,7 @@
 				A20000018 /* StereoImageView.swift */,
 				A20000019 /* FolderAnalysisView.swift */,
 				A20000020 /* ComparisonView.swift */,
+				A20000091 /* SettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -215,6 +221,8 @@
 				A10000016 /* StereoImageView.swift in Sources */,
 				A10000017 /* FolderAnalysisView.swift in Sources */,
 				A10000018 /* ComparisonView.swift in Sources */,
+				A10000090 /* WebDAV.swift in Sources */,
+				A10000091 /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

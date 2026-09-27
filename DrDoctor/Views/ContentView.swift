@@ -15,6 +15,14 @@ struct ContentView: View {
     @State private var progress: Double = 0
     @State private var progressMessage = ""
     @State private var pathText = ""
+    @State private var signIn: SignInRequest?
+
+    /// A WebDAV request the server rejected, to run again after signing in.
+    struct SignInRequest: Identifiable {
+        let id = UUID()
+        let message: String
+        let retry: () -> Void
+    }
 
     var body: some View {
         ZStack {
@@ -50,28 +58,47 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
             handleDrop(providers)
         }
-        .onChange(of: appState.pendingFileURL) {
+        // `initial: true` picks up URLs that arrived before the window appeared.
+        .onChange(of: appState.pendingFileURL, initial: true) {
             if let url = appState.pendingFileURL {
                 appState.pendingFileURL = nil
                 var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                if WebDAV.isRemote(url) {
+                    // Only folders are handed over remotely (drdoctor://analyze).
+                    reset()
+                    analyzeFolder(url: url)
+                } else if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
                     analyzeFolder(url: url)
                 } else {
                     handleOpenURL(url)
                 }
             }
         }
-        .onChange(of: appState.pendingCompareURLs?.0) {
+        .onChange(of: appState.pendingCompareURLs?.0, initial: true) {
             if let urls = appState.pendingCompareURLs {
                 appState.pendingCompareURLs = nil
                 reset()
                 runComparison(urlA: urls.0, urlB: urls.1)
             }
         }
+        .onChange(of: appState.pendingError, initial: true) {
+            if let message = appState.pendingError {
+                appState.pendingError = nil
+                errorMessage = message
+                showError = true
+            }
+        }
         .alert("Error", isPresented: $showError) {
             Button("OK") { showError = false }
         } message: {
             Text(errorMessage ?? "")
+        }
+        .sheet(item: $signIn) { request in
+            WebDAVSignInSheet(
+                message: request.message,
+                onRetry: { signIn = nil; request.retry() },
+                onCancel: { signIn = nil }
+            )
         }
     }
 
@@ -473,11 +500,15 @@ struct ContentView: View {
         url: URL,
         progress: @Sendable @escaping (Double, String) async -> Void
     ) async throws -> (tracks: [TrackSummary], summary: AlbumSummary) {
-        let fm = FileManager.default
-        let contents = try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
-        let audioFiles = contents
-            .filter { supportedExtensions.contains($0.pathExtension.lowercased()) }
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        let audioFiles: [URL]
+        if WebDAV.isRemote(url) {
+            audioFiles = try await WebDAV.listFiles(in: url, extensions: supportedExtensions)
+        } else {
+            let contents = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+            audioFiles = contents
+                .filter { supportedExtensions.contains($0.pathExtension.lowercased()) }
+                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        }
 
         guard !audioFiles.isEmpty else {
             throw AudioReaderError.readError("No audio files found in this folder.")
@@ -519,11 +550,21 @@ struct ContentView: View {
         else { overallVerdict = .poor }
 
         let summary = AlbumSummary(
-            folderName: url.lastPathComponent, trackCount: tracks.count,
+            folderName: albumName(url), trackCount: tracks.count,
             avgDR: avgDR, avgLUFS: avgLUFS, maxTruePeak: maxPeak,
             worstClipping: worstClip, overallVerdict: overallVerdict
         )
         return (tracks, summary)
+    }
+
+    /// Album folders often end in a format folder (".../Album/Flac"); name
+    /// them after the album instead.
+    private nonisolated static func albumName(_ url: URL) -> String {
+        let generic: Set<String> = ["flac", "dsf", "dff", "dsd", "wav", "aiff", "alac", "hi-res", "hires"]
+        let name = url.lastPathComponent
+        guard generic.contains(name.lowercased()) else { return name }
+        let parent = url.deletingLastPathComponent().lastPathComponent
+        return parent.isEmpty || parent == "/" ? name : parent
     }
 
     // MARK: - Folder Analysis
@@ -550,9 +591,7 @@ struct ContentView: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    showError = true
-                    isAnalyzing = false
+                    fail(error) { analyzeFolder(url: url) }
                 }
             }
         }
@@ -608,8 +647,8 @@ struct ContentView: View {
                 }
 
                 let comparison = ComparisonData(
-                    editionA: EditionData(name: urlA.lastPathComponent, tracks: resultA.tracks, summary: resultA.summary),
-                    editionB: EditionData(name: urlB.lastPathComponent, tracks: resultB.tracks, summary: resultB.summary)
+                    editionA: EditionData(name: Self.albumName(urlA), tracks: resultA.tracks, summary: resultA.summary),
+                    editionB: EditionData(name: Self.albumName(urlB), tracks: resultB.tracks, summary: resultB.summary)
                 )
 
                 await MainActor.run {
@@ -619,11 +658,24 @@ struct ContentView: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    showError = true
-                    isAnalyzing = false
+                    fail(error) { runComparison(urlA: urlA, urlB: urlB) }
                 }
             }
+        }
+    }
+
+    /// Shows the error, or — when the WebDAV server rejected the credentials —
+    /// asks for them and runs `retry` once the user connects.
+    private func fail(_ error: Error, retry: @escaping () -> Void) {
+        isAnalyzing = false
+        if case WebDAVError.unauthorized(let server) = error {
+            signIn = SignInRequest(
+                message: "\(server.host ?? "The server") needs a user and password to read this album. They’re saved in Settings → WebDAV.",
+                retry: retry
+            )
+        } else {
+            errorMessage = error.localizedDescription
+            showError = true
         }
     }
 

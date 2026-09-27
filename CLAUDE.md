@@ -6,7 +6,7 @@ macOS SwiftUI app (Sonoma 14+). Analyzes DR, LUFS, clipping, spectral, stereo im
 
 ```
 DrDoctor/
-  DrDoctorApp.swift          — App entry, AppDelegate (handles URLs from external apps)
+  DrDoctorApp.swift          — App entry, AppDelegate (handles URLs from external apps + drdoctor:// links)
   Info.plist                 — Document types for audio + DSF/DFF
   Audio/
     AudioFileReader.swift    — AVFoundation + custom DSF parser (CIC decimator)
@@ -26,6 +26,7 @@ DrDoctor/
     WaveformView.swift       — Waveform visualization
     SpectrumView.swift       — Spectrum visualization (0 to -90dB fixed range)
     StereoImageView.swift    — Vectorscope + stereo metrics
+    SettingsView.swift       — Settings → WebDAV tab (Zplayer integration) + sign-in sheet
     VerdictBadgeView.swift   — Verdict badge component
 ```
 
@@ -127,6 +128,10 @@ SHA=$(shasum -a 256 "/tmp/DrDoctor-${VERSION}.dmg" | awk '{print $1}')
 ## Landing Page
 
 Hosted at `https://drdoctor.priet.us` via nginx. Older DMGs (up to 1.1.2) are also on the site at `https://drdoctor.priet.us/downloads/`; new releases are only published on GitHub.
+
+## Zplayer integration (drdoctor:// links)
+
+Zplayer for Mac opens `drdoctor://analyze?server=<base>&path=<album dir>&user=<u>` and `drdoctor://compare?server=…&pathA=…&pathB=…&user=…` (same shape as the iOS app; paths relative to `server`, no password in the link). `DrDoctorLink` turns them into WebDAV folder URLs; folder analysis lists them with PROPFIND and `AudioFileReader` downloads each file with Basic auth from `WebDAV.authorize` (Settings → WebDAV, or `user`/`pass` from an iOS-style link for the session). A 401/403 shows the sign-in sheet and retries. `AppState` lives in the AppDelegate and ContentView uses `onChange(initial: true)` so a link that cold-launches the app isn't lost. Info.plist allows plain http (ATS) because the share may be http.
 
 ## Known Gotchas
 

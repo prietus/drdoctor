@@ -83,9 +83,17 @@ final class AudioFileReader {
         var request = URLRequest(url: sanitizedURL(url), timeoutInterval: 120)
         request.httpMethod = "GET"
         addAuth(to: &request, from: url)
+        if request.value(forHTTPHeaderField: "Authorization") == nil {
+            WebDAV.authorize(&request, for: url)
+        }
 
         let (tempURL, response) = try await URLSession.shared.download(for: request)
 
+        if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+            var root = URLComponents(url: sanitizedURL(url), resolvingAgainstBaseURL: false)
+            root?.path = "/"
+            throw WebDAVError.unauthorized(server: root?.url ?? url)
+        }
         if let http = response as? HTTPURLResponse,
            !(200...299).contains(http.statusCode) {
             throw AudioReaderError.readError("HTTP \(http.statusCode) downloading \(url.lastPathComponent)")
