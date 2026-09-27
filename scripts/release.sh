@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: scripts/release.sh 1.2.0
 #        NOTARIZE=0 scripts/release.sh 1.2.0   # sign only, no notarization (dev)
 #        PUBLISH=0  scripts/release.sh 1.2.0   # notarize, but no tag / GitHub release / tap bump
-#        INSTALL=0  scripts/release.sh 1.2.0   # don't replace /Applications/DrDoctor.app
+#        INSTALL=0  scripts/release.sh 1.2.0   # don't install (default: brew upgrade after the cask bump)
 #
 # Builds a Release .app signed with Developer ID (hardened runtime, secure
 # timestamps), packs it into a DMG, notarizes and staples it, and leaves the
@@ -151,15 +151,15 @@ spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG
 SHA256="$(shasum -a 256 "$DMG_OUT" | awk '{print $1}')"
 echo "==> sha256: $SHA256"
 
-if [ "$INSTALL" = "1" ]; then
-    echo "==> Installing to /Applications..."
-    pkill -x DrDoctor 2>/dev/null || true
-    sleep 1
-    rm -rf /Applications/DrDoctor.app
-    cp -R "$APP_OUT" /Applications/
-fi
-
 if [ "$PUBLISH" != "1" ]; then
+    # No new cask to install from, so copy the build directly (local testing).
+    if [ "$INSTALL" = "1" ]; then
+        echo "==> Installing to /Applications (unmanaged copy, PUBLISH=0)..."
+        pkill -x DrDoctor 2>/dev/null || true
+        sleep 1
+        rm -rf /Applications/DrDoctor.app
+        cp -R "$APP_OUT" /Applications/
+    fi
     echo
     echo "==> Publish skipped (PUBLISH=$PUBLISH)."
     echo "    App: $APP_OUT (notarized + stapled)"
@@ -192,6 +192,19 @@ echo "==> Bumping cask to ${VERSION} in ${TAP_DIR}..."
     git commit -q -m "drdoctor ${VERSION}"
     git push -q
 )
+
+if [ "$INSTALL" = "1" ]; then
+    echo "==> Installing ${VERSION} with Homebrew..."
+    # Make sure the tap Homebrew reads has the bumped cask (TAP_DIR may be another clone).
+    git -C "$(brew --repository prietus/drdoctor)" pull -q --ff-only
+    pkill -x DrDoctor 2>/dev/null || true
+    if brew list --cask prietus/drdoctor/drdoctor >/dev/null 2>&1; then
+        brew upgrade --cask prietus/drdoctor/drdoctor
+    else
+        # Not managed by Homebrew yet: --force replaces any copy already in /Applications.
+        brew install --cask --force prietus/drdoctor/drdoctor
+    fi
+fi
 
 echo
 echo "==> Done."

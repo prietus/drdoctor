@@ -113,7 +113,7 @@ Repo is public (MIT). Each version is a GitHub Release (`v{VERSION}` tag) with t
 
 Tap: `prietus/homebrew-drdoctor` at `/opt/homebrew/Library/Taps/prietus/homebrew-drdoctor`. The cask downloads from GitHub Releases and has `livecheck` (`github_latest`); only `version` and `sha256` change per release.
 
-`scripts/release.sh VERSION` does the whole flow (modelled on drtagger for Mac's): build → sign → DMG → notarize + staple (keychain profile `notarytool-profile`) → install to /Applications → tag + GitHub release → cask bump. Artifacts land in `dist/`. Flags: `NOTARIZE=0`, `PUBLISH=0`, `INSTALL=0`. Publishing refuses a dirty tree, a non-main branch or an existing tag. Release notes come from `--generate-notes`.
+`scripts/release.sh VERSION` does the whole flow (modelled on drtagger for Mac's): build → sign → DMG → notarize + staple (keychain profile `notarytool-profile`) → tag + GitHub release → cask bump → `brew upgrade --cask drdoctor` (the local app is managed by Homebrew; don't copy it to /Applications by hand). Artifacts land in `dist/`. Flags: `NOTARIZE=0`, `PUBLISH=0`, `INSTALL=0`. Publishing refuses a dirty tree, a non-main branch or an existing tag. Release notes come from `--generate-notes`.
 
 ### Update cask manually
 ```bash
